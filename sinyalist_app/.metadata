@@ -1,0 +1,22 @@
+# This file tracks properties of this Flutter project.
+version:
+  revision: "MANUAL"
+  channel: "stable"
+
+project_type: app
+
+migration:
+  platforms:
+    - platform: root
+      create_revision: "MANUAL"
+      base_revision: "MANUAL"
+    - platform: android
+      create_revision: "MANUAL"
+      base_revision: "MANUAL"
+    - platform: web
+      create_revision: "MANUAL"
+      base_revision: "MANUAL"
+
+  unmanaged_files:
+    - 'lib/main.dart'
+    - 'android/app/src/main/kotlin/com/sinyalist/MainActivity.kt'

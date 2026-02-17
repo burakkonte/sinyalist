@@ -1,0 +1,14 @@
+D:\Sinyalist_v2_Field_Reliable\backend\target\release\deps\serde-7466b5fa6487bebb.d: C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs D:\Sinyalist_v2_Field_Reliable\backend\target\release\build\serde-4fdddc1708024492\out/private.rs
+
+D:\Sinyalist_v2_Field_Reliable\backend\target\release\deps\libserde-7466b5fa6487bebb.rlib: C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs D:\Sinyalist_v2_Field_Reliable\backend\target\release\build\serde-4fdddc1708024492\out/private.rs
+
+D:\Sinyalist_v2_Field_Reliable\backend\target\release\deps\libserde-7466b5fa6487bebb.rmeta: C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs D:\Sinyalist_v2_Field_Reliable\backend\target\release\build\serde-4fdddc1708024492\out/private.rs
+
+C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs:
+C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs:
+C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs:
+C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs:
+C:\Users\su-ko\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs:
+D:\Sinyalist_v2_Field_Reliable\backend\target\release\build\serde-4fdddc1708024492\out/private.rs:
+
+# env-dep:OUT_DIR=D:\\Sinyalist_v2_Field_Reliable\\backend\\target\\release\\build\\serde-4fdddc1708024492\\out

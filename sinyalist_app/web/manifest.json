@@ -1,0 +1,11 @@
+{
+    "name": "Sinyalist",
+    "short_name": "Sinyalist",
+    "start_url": ".",
+    "display": "standalone",
+    "background_color": "#000000",
+    "theme_color": "#FF3B30",
+    "description": "Mission-critical earthquake survival system",
+    "orientation": "portrait-primary",
+    "prefer_related_applications": false
+}

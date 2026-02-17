@@ -1,0 +1,63 @@
+syntax = "proto3";
+package sinyalist;
+option java_package = "com.sinyalist.proto";
+option java_outer_classname = "SinyalistProto";
+option optimize_for = LITE_RUNTIME;
+
+enum AlertLevel {
+  ALERT_UNKNOWN = 0; ALERT_TREMOR = 1; ALERT_MODERATE = 2;
+  ALERT_SEVERE = 3; ALERT_CRITICAL = 4;
+}
+enum BloodType {
+  BLOOD_UNKNOWN = 0;
+  A_POS = 1; A_NEG = 2; B_POS = 3; B_NEG = 4;
+  AB_POS = 5; AB_NEG = 6; O_POS = 7; O_NEG = 8;
+}
+enum ConnectivityMode {
+  CONN_UNKNOWN = 0; CONN_GRPC = 1; CONN_SMS = 2;
+  CONN_BLE_MESH = 3; CONN_WIFI_P2P = 4;
+}
+enum MessageType {
+  MSG_UNKNOWN = 0; MSG_TRAPPED = 1; MSG_MEDICAL = 2;
+  MSG_SOS = 3; MSG_STATUS = 4; MSG_HEARTBEAT = 5;
+}
+enum Priority {
+  PRIORITY_UNKNOWN = 0; PRIORITY_CRITICAL = 1; PRIORITY_HIGH = 2;
+  PRIORITY_NORMAL = 3; PRIORITY_LOW = 4;
+}
+
+message SinyalistPacket {
+  fixed64 user_id = 1; uint32 device_hash = 2;
+  sint32 latitude_e7 = 3; sint32 longitude_e7 = 4;
+  float altitude_m = 5; uint32 accuracy_cm = 6;
+  int32 floor_number = 7; string room_hint = 8;
+  BloodType blood_type = 9; uint32 pulse_bpm = 10;
+  uint32 spo2_percent = 11; bool has_medical_needs = 12;
+  uint32 battery_percent = 13; ConnectivityMode conn = 14;
+  AlertLevel alert_level = 15;
+  fixed64 timestamp_ms = 16; uint32 quake_duration_s = 17;
+  uint32 hop_count = 18; fixed32 origin_mesh_id = 19; uint32 ttl = 20;
+  bool is_trapped = 21; uint32 people_count = 22; string sos_message = 23;
+  // v2 fields
+  bytes packet_id = 24;           // 16-byte UUID
+  fixed64 created_at_ms = 25;
+  MessageType msg_type = 26;
+  Priority priority = 27;
+  bytes ed25519_signature = 28;   // 64 bytes
+  bytes ed25519_public_key = 29;  // 32 bytes
+  float sta_lta_ratio = 30;
+  float peak_accel_g = 31;
+  float dominant_freq_hz = 32;
+}
+
+message MeshRelay {
+  fixed32 relay_node_id = 1;
+  uint64 relay_time_ms = 2;
+  repeated SinyalistPacket packets = 3;
+}
+
+message PacketAck {
+  fixed64 user_id = 1; fixed64 timestamp_ms = 2;
+  bool received = 3; string rescue_eta = 4;
+  float confidence = 5;  // v2: geo-cluster confidence score
+}
