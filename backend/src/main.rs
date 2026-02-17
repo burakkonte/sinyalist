@@ -8,7 +8,7 @@
 //   C4: Structured logs + counters for all drop/accept paths
 // =============================================================================
 
-use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::{get, post}};
+use axum::{Router, extract::State, http::{StatusCode, HeaderMap, HeaderValue}, response::IntoResponse, routing::{get, post}};
 use bytes::Bytes;
 use dashmap::DashMap;
 use prost::Message;
@@ -188,7 +188,7 @@ async fn ingest(State(s): State<AppState>, body: Bytes) -> impl IntoResponse {
     if body.len() > MAX_PKT {
         s.m.oversized.fetch_add(1, Ordering::Relaxed);
         warn!(size=body.len(), max=MAX_PKT, "oversized_packet");
-        return (StatusCode::PAYLOAD_TOO_LARGE, Bytes::new());
+        return (StatusCode::PAYLOAD_TOO_LARGE, HeaderMap::new(), Bytes::new());
     }
 
     // Decode protobuf
@@ -196,7 +196,7 @@ async fn ingest(State(s): State<AppState>, body: Bytes) -> impl IntoResponse {
         Ok(p) => p, Err(e) => {
             s.m.malformed.fetch_add(1, Ordering::Relaxed);
             warn!(error=%e, "malformed_packet");
-            return (StatusCode::BAD_REQUEST, Bytes::new());
+            return (StatusCode::BAD_REQUEST, HeaderMap::new(), Bytes::new());
         }
     };
 
@@ -204,7 +204,7 @@ async fn ingest(State(s): State<AppState>, body: Bytes) -> impl IntoResponse {
     if p.user_id == 0 || p.timestamp_ms == 0 {
         s.m.malformed.fetch_add(1, Ordering::Relaxed);
         warn!(uid=p.user_id, ts=p.timestamp_ms, "missing_required_fields");
-        return (StatusCode::UNPROCESSABLE_ENTITY, Bytes::new());
+        return (StatusCode::UNPROCESSABLE_ENTITY, HeaderMap::new(), Bytes::new());
     }
 
     // C2: Ed25519 signature REQUIRED (not optional)
@@ -212,13 +212,13 @@ async fn ingest(State(s): State<AppState>, body: Bytes) -> impl IntoResponse {
     if p.ed25519_signature.is_empty() || p.ed25519_public_key.is_empty() {
         s.m.sig_missing.fetch_add(1, Ordering::Relaxed);
         warn!(uid=p.user_id, "signature_missing");
-        return (StatusCode::BAD_REQUEST, Bytes::new());
+        return (StatusCode::BAD_REQUEST, HeaderMap::new(), Bytes::new());
     }
 
     if !verify_sig(&p) {
         s.m.verify_fail.fetch_add(1, Ordering::Relaxed);
         warn!(uid=p.user_id, "verify_fail");
-        return (StatusCode::FORBIDDEN, Bytes::new());
+        return (StatusCode::FORBIDDEN, HeaderMap::new(), Bytes::new());
     }
     s.known_keys.entry(p.ed25519_public_key.clone()).or_insert(now);
 
@@ -229,7 +229,7 @@ async fn ingest(State(s): State<AppState>, body: Bytes) -> impl IntoResponse {
         s.m.deduped.fetch_add(1, Ordering::Relaxed);
         info!(uid=p.user_id, "dedup_drop");
         // C1: Return 200 for dedup (already accepted), but don't inflate confidence
-        return (StatusCode::OK, encode_ack(&p, true, 0.0, "already_accepted"));
+        return (StatusCode::OK, HeaderMap::new(), encode_ack(&p, true, 0.0, "already_accepted"));
     }
     s.dedup.insert(dk, now);
 
@@ -237,7 +237,7 @@ async fn ingest(State(s): State<AppState>, body: Bytes) -> impl IntoResponse {
     if !check_rl(&s.rl_key, &p.ed25519_public_key, now, RL_PER_KEY) {
         s.m.spam.fetch_add(1, Ordering::Relaxed);
         warn!(uid=p.user_id, "spam_drop_per_key");
-        return (StatusCode::TOO_MANY_REQUESTS, Bytes::new());
+        return (StatusCode::TOO_MANY_REQUESTS, HeaderMap::new(), Bytes::new());
     }
 
     // Rate limits per geo bucket
@@ -245,7 +245,7 @@ async fn ingest(State(s): State<AppState>, body: Bytes) -> impl IntoResponse {
     if !check_geo_rl(&s.rl_geo, gk, now) {
         s.m.spam.fetch_add(1, Ordering::Relaxed);
         warn!(uid=p.user_id, geo=gk, "spam_drop_per_geo");
-        return (StatusCode::TOO_MANY_REQUESTS, Bytes::new());
+        return (StatusCode::TOO_MANY_REQUESTS, HeaderMap::new(), Bytes::new());
     }
 
     s.m.ingested.fetch_add(1, Ordering::Relaxed);
@@ -274,19 +274,22 @@ async fn ingest(State(s): State<AppState>, body: Bytes) -> impl IntoResponse {
         Ok(_) => {
             s.m.accepted_ok.fetch_add(1, Ordering::Relaxed);
             info!(uid=p.user_id, trapped=p.is_trapped, conf=conf, "accepted_ok");
-            (StatusCode::OK, encode_ack(&p, true, conf, "accepted"))
+            (StatusCode::OK, HeaderMap::new(), encode_ack(&p, true, conf, "accepted"))
         }
         Err(mpsc::error::TrySendError::Full(_)) => {
             // C1: Queue full — do NOT pretend delivered
             s.m.queue_full.fetch_add(1, Ordering::Relaxed);
             s.m.backpressure.fetch_add(1, Ordering::Relaxed);
             warn!(uid=p.user_id, "queue_full — returning 503");
-            (StatusCode::SERVICE_UNAVAILABLE, Bytes::new())
+            let mut headers = HeaderMap::new();
+            headers.insert("Retry-After", HeaderValue::from_static("5"));
+            (StatusCode::SERVICE_UNAVAILABLE, headers, Bytes::new())
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {
             s.m.queue_full.fetch_add(1, Ordering::Relaxed);
             error!("persist channel closed");
-            (StatusCode::INTERNAL_SERVER_ERROR, Bytes::new())
+            let headers = HeaderMap::new();
+            (StatusCode::INTERNAL_SERVER_ERROR, headers, Bytes::new())
         }
     }
 }
@@ -523,6 +526,61 @@ mod tests {
         let t3 = time_bucket(60000);
         assert_eq!(t1, t2); // Same minute
         assert_ne!(t2, t3); // Different minutes
+    }
+
+    #[test]
+    fn test_verify_sig_valid_roundtrip() {
+        use ed25519_dalek::{SigningKey, Signer};
+        use rand::rngs::OsRng;
+
+        // Generate a real keypair
+        let sk = SigningKey::generate(&mut OsRng);
+        let vk = sk.verifying_key();
+
+        // Build a packet WITHOUT signature
+        let mut p = proto::SinyalistPacket::default();
+        p.user_id = 42;
+        p.timestamp_ms = 1700000000000;
+        p.latitude_e7 = 410000000;
+        p.longitude_e7 = 290000000;
+        p.packet_id = vec![1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16];
+        p.ed25519_public_key = vk.to_bytes().to_vec();
+
+        // Serialize without signature to get signing bytes
+        let mut signing_bytes = Vec::with_capacity(p.encoded_len());
+        p.encode(&mut signing_bytes).unwrap();
+
+        // Sign
+        let sig = sk.sign(&signing_bytes);
+        p.ed25519_signature = sig.to_bytes().to_vec();
+
+        // Verify
+        assert!(verify_sig(&p), "Valid signature should pass verification");
+    }
+
+    #[test]
+    fn test_verify_sig_detects_tampering() {
+        use ed25519_dalek::{SigningKey, Signer};
+        use rand::rngs::OsRng;
+
+        let sk = SigningKey::generate(&mut OsRng);
+        let vk = sk.verifying_key();
+
+        let mut p = proto::SinyalistPacket::default();
+        p.user_id = 42;
+        p.timestamp_ms = 1700000000000;
+        p.ed25519_public_key = vk.to_bytes().to_vec();
+
+        let mut signing_bytes = Vec::with_capacity(p.encoded_len());
+        p.encode(&mut signing_bytes).unwrap();
+
+        let sig = sk.sign(&signing_bytes);
+        p.ed25519_signature = sig.to_bytes().to_vec();
+
+        // Tamper with a field AFTER signing
+        p.user_id = 99;
+
+        assert!(!verify_sig(&p), "Tampered packet should fail verification");
     }
 
     #[test]

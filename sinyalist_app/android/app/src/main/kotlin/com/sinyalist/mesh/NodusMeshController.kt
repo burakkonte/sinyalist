@@ -426,6 +426,7 @@ class NodusMeshController(private val context: Context) {
     private val lruDedup = LruDedupSet(maxSize = 10_000) // B2: Deterministic LRU dedup
     private var meshNodeId: Int = 0
     private var dedupEvictTimer: Timer? = null
+    private var packetStore: MeshPacketStore? = null // B3: SQLite persistence
 
     // Counters for observability
     private val stormDropCount = AtomicInteger(0)
@@ -480,6 +481,10 @@ class NodusMeshController(private val context: Context) {
 
         meshNodeId = bluetoothAdapter?.address?.hashCode() ?: System.nanoTime().toInt()
 
+        // B3: Initialize SQLite persistence for store-carry-forward
+        packetStore = MeshPacketStore(context)
+        Log.i(TAG, "SQLite packet store initialized")
+
         Log.i(TAG, "Nodus mesh initialized — nodeId=$meshNodeId")
         logTransition("uninitialized", "initialized")
         return true
@@ -492,15 +497,40 @@ class NodusMeshController(private val context: Context) {
     fun startMesh() {
         if (isActive.getAndSet(true)) return
 
+        // B3: Restore persisted packets from SQLite into the priority queue
+        packetStore?.let { store ->
+            try {
+                val restored = store.loadPendingPackets()
+                var loaded = 0
+                for (packet in restored) {
+                    if (!packet.isExpired) {
+                        val dedupKey = packet.dedupKey()
+                        bloomFilter.add(dedupKey)
+                        lruDedup.add(dedupKey)
+                        if (priorityQueue.enqueue(packet)) loaded++
+                    }
+                }
+                Log.i(TAG, "B3: Restored $loaded/${restored.size} packets from SQLite")
+            } catch (e: Exception) {
+                Log.e(TAG, "B3: Failed to load persisted packets", e)
+            }
+        }
+
         startGattServer()
         startAdvertising()
         startScanning()
 
-        // Start periodic dedup eviction
+        // Start periodic dedup eviction (also prunes SQLite)
         dedupEvictTimer = Timer().apply {
             scheduleAtFixedRate(object : TimerTask() {
                 override fun run() {
                     lruDedup.evictExpired(MeshPacket.PACKET_TTL_MS)
+                    // B3: Also evict expired packets from SQLite
+                    try {
+                        packetStore?.deleteExpired(MeshPacket.PACKET_TTL_MS)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "B3: Failed to delete expired packets from SQLite", e)
+                    }
                 }
             }, DEDUP_EVICT_INTERVAL_MS, DEDUP_EVICT_INTERVAL_MS)
         }
@@ -567,6 +597,15 @@ class NodusMeshController(private val context: Context) {
         if (!enqueued) {
             Log.w(TAG, "RATE LIMITED: Local packet not enqueued (priority=${packet.priority})")
             stormDropCount.incrementAndGet()
+        }
+
+        // B3: Persist to SQLite for store-carry-forward across restarts
+        if (enqueued) {
+            try {
+                packetStore?.insertPacket(packet)
+            } catch (e: Exception) {
+                Log.e(TAG, "B3: Failed to persist packet to SQLite", e)
+            }
         }
 
         // Update GATT characteristic

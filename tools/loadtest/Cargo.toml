@@ -1,0 +1,12 @@
+[package]
+name = "sinyalist-loadtest"
+version = "1.0.0"
+edition = "2021"
+description = "Load test tool for Sinyalist ingest server"
+
+[dependencies]
+reqwest = { version = "0.11", features = ["blocking"] }
+prost = "0.12"
+ed25519-dalek = { version = "2", features = ["std", "rand_core"] }
+rand = "0.8"
+clap = { version = "4", features = ["derive"] }
