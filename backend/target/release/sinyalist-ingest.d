@@ -1,0 +1,1 @@
+D:\Sinyalist_v2_Field_Reliable\.claude\worktrees\sad-bassi\backend\target\release\sinyalist-ingest.exe: D:\Sinyalist_v2_Field_Reliable\.claude\worktrees\sad-bassi\backend\../proto/sinyalist_packet.proto D:\Sinyalist_v2_Field_Reliable\.claude\worktrees\sad-bassi\backend\build.rs D:\Sinyalist_v2_Field_Reliable\.claude\worktrees\sad-bassi\backend\src\main.rs

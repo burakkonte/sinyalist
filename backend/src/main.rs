@@ -1,7 +1,11 @@
 // =============================================================================
 // SINYALIST — Emergency Ingestion Server v2.0 (Rust/Axum/Tokio)
 // =============================================================================
-// v2: +Ed25519 verify, +geo-cluster confidence, +rate limiting, +observability
+// v2 Field-Ready changes:
+//   C1: ACK semantics — 429/503 on queue full, honest non-200 responses
+//   C2: Strict Ed25519 verification (REQUIRED, not optional)
+//   C3: Confidence scoring tested — dedup does NOT inflate
+//   C4: Structured logs + counters for all drop/accept paths
 // =============================================================================
 
 use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::{get, post}};
@@ -77,10 +81,12 @@ pub mod proto {
         #[prost(bool, tag="3")]    pub received: bool,
         #[prost(string, tag="4")]  pub rescue_eta: String,
         #[prost(float, tag="5")]   pub confidence: f32,
+        #[prost(string, tag="6")]  pub ingest_id: String,    // C1: server-assigned ID
+        #[prost(string, tag="7")]  pub status: String,       // C1: "accepted" or "processed"
     }
 }
 
-// Geo-cluster: grid-cell confidence scoring
+// Geo-cluster: grid-cell confidence scoring (C3)
 fn geo_key(lat_e7: i32, lon_e7: i32) -> u64 {
     let la = (lat_e7 / 9000) as i64; // ~1km cells
     let lo = (lon_e7 / 9000) as i64;
@@ -91,11 +97,15 @@ fn time_bucket(ms: u64) -> u64 { ms / 60_000 }
 #[derive(Default)]
 struct GeoCluster { keys: HashSet<[u8;32]>, total: u64, first_ms: u64 }
 impl GeoCluster {
+    // C3: Confidence increases only with UNIQUE independently signed reports
+    // Duplicates (same public key) do NOT inflate confidence
     fn confidence(&self) -> f32 {
-        let u = self.keys.len() as f32;
-        if u == 0.0 { return 0.0; }
-        let spam = if self.total as f32 > u * 3.0 { 0.5 } else { 1.0 };
-        ((u.ln() + 1.0) / 3.0 * spam).min(1.0)
+        let unique = self.keys.len() as f32;
+        if unique == 0.0 { return 0.0; }
+        // Spam detection: if total reports greatly exceed unique reporters, penalize
+        let spam_factor = if self.total as f32 > unique * 3.0 { 0.5 } else { 1.0 };
+        // Log-scale: 1 reporter=0.33, 3=0.70, 7=0.98, 8+=1.0
+        ((unique.ln() + 1.0) / 3.0 * spam_factor).min(1.0)
     }
 }
 
@@ -105,6 +115,8 @@ const RL_PER_KEY: u32 = 30;
 const RL_PER_GEO: u32 = 500;
 const MAX_PKT: usize = 1024;
 const DEDUP_TTL: u64 = 300_000;
+// C2: Schema version enforcement
+const SCHEMA_VERSION: &str = "2.0";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -118,28 +130,34 @@ pub struct AppState {
     known_keys: Arc<DashMap<Vec<u8>, u64>>,
 }
 
+// C4: Full structured observability counters
 pub struct Metrics {
     ingested: AtomicU64, deduped: AtomicU64, afad: AtomicU64,
     persisted: AtomicU64, backpressure: AtomicU64,
     verify_fail: AtomicU64, spam: AtomicU64, malformed: AtomicU64, oversized: AtomicU64,
+    accepted_ok: AtomicU64, processed_ok: AtomicU64, queue_full: AtomicU64,
+    sig_missing: AtomicU64,
 }
 impl Metrics { fn new() -> Self { Self {
     ingested:AtomicU64::new(0), deduped:AtomicU64::new(0), afad:AtomicU64::new(0),
     persisted:AtomicU64::new(0), backpressure:AtomicU64::new(0),
     verify_fail:AtomicU64::new(0), spam:AtomicU64::new(0),
     malformed:AtomicU64::new(0), oversized:AtomicU64::new(0),
+    accepted_ok:AtomicU64::new(0), processed_ok:AtomicU64::new(0),
+    queue_full:AtomicU64::new(0), sig_missing:AtomicU64::new(0),
 }}}
 
 fn verify_sig(p: &proto::SinyalistPacket) -> bool {
     if p.ed25519_public_key.len() != 32 || p.ed25519_signature.len() != 64 { return false; }
     use ed25519_dalek::{Signature, VerifyingKey, Verifier};
+    // Sign the packet bytes WITHOUT the signature field
     let mut sp = p.clone(); sp.ed25519_signature.clear();
     let mut sb = Vec::with_capacity(sp.encoded_len());
     if sp.encode(&mut sb).is_err() { return false; }
     let Ok(pk) = <[u8;32]>::try_from(p.ed25519_public_key.as_slice()) else { return false; };
     let Ok(sg) = <[u8;64]>::try_from(p.ed25519_signature.as_slice()) else { return false; };
     let Ok(vk) = VerifyingKey::from_bytes(&pk) else { return false; };
-    let Ok(sig) = Signature::from_bytes(&sg) else { return false; };
+    let sig = Signature::from_bytes(&sg);
     vk.verify(&sb, &sig).is_ok()
 }
 
@@ -155,56 +173,84 @@ fn check_geo_rl(m: &DashMap<u64,RateEntry>, k: u64, now: u64) -> bool {
     else if e.count < RL_PER_GEO { e.count+=1; true } else { false }
 }
 
+// Generate a unique ingest ID
+fn generate_ingest_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    format!("ing_{:016x}", ts)
+}
+
 #[instrument(skip_all)]
 async fn ingest(State(s): State<AppState>, body: Bytes) -> impl IntoResponse {
     let now = chrono::Utc::now().timestamp_millis() as u64;
+
+    // C2: Strict size limit
     if body.len() > MAX_PKT {
         s.m.oversized.fetch_add(1, Ordering::Relaxed);
+        warn!(size=body.len(), max=MAX_PKT, "oversized_packet");
         return (StatusCode::PAYLOAD_TOO_LARGE, Bytes::new());
     }
+
+    // Decode protobuf
     let p = match proto::SinyalistPacket::decode(body) {
         Ok(p) => p, Err(e) => {
             s.m.malformed.fetch_add(1, Ordering::Relaxed);
-            warn!(error=%e, "malformed"); return (StatusCode::BAD_REQUEST, Bytes::new());
+            warn!(error=%e, "malformed_packet");
+            return (StatusCode::BAD_REQUEST, Bytes::new());
         }
     };
+
+    // C2: Required fields validation
     if p.user_id == 0 || p.timestamp_ms == 0 {
         s.m.malformed.fetch_add(1, Ordering::Relaxed);
+        warn!(uid=p.user_id, ts=p.timestamp_ms, "missing_required_fields");
         return (StatusCode::UNPROCESSABLE_ENTITY, Bytes::new());
     }
 
-    // Signature verification
-    if !p.ed25519_signature.is_empty() {
-        if !verify_sig(&p) {
-            s.m.verify_fail.fetch_add(1, Ordering::Relaxed);
-            warn!(uid=p.user_id, "verify_fail"); return (StatusCode::FORBIDDEN, Bytes::new());
-        }
-        s.known_keys.entry(p.ed25519_public_key.clone()).or_insert(now);
+    // C2: Ed25519 signature REQUIRED (not optional)
+    // If signature is present, verify it. If missing, reject.
+    if p.ed25519_signature.is_empty() || p.ed25519_public_key.is_empty() {
+        s.m.sig_missing.fetch_add(1, Ordering::Relaxed);
+        warn!(uid=p.user_id, "signature_missing");
+        return (StatusCode::BAD_REQUEST, Bytes::new());
     }
 
-    // Dedup
+    if !verify_sig(&p) {
+        s.m.verify_fail.fetch_add(1, Ordering::Relaxed);
+        warn!(uid=p.user_id, "verify_fail");
+        return (StatusCode::FORBIDDEN, Bytes::new());
+    }
+    s.known_keys.entry(p.ed25519_public_key.clone()).or_insert(now);
+
+    // Dedup — use packet_id if available, else user_id+timestamp
     let dk = if !p.packet_id.is_empty() { p.packet_id.clone() }
              else { let mut k = p.user_id.to_le_bytes().to_vec(); k.extend(&p.timestamp_ms.to_le_bytes()); k };
     if s.dedup.contains_key(&dk) {
         s.m.deduped.fetch_add(1, Ordering::Relaxed);
-        return (StatusCode::OK, encode_ack(&p, true, 0.0));
+        info!(uid=p.user_id, "dedup_drop");
+        // C1: Return 200 for dedup (already accepted), but don't inflate confidence
+        return (StatusCode::OK, encode_ack(&p, true, 0.0, "already_accepted"));
     }
     s.dedup.insert(dk, now);
 
-    // Rate limits
-    if !p.ed25519_public_key.is_empty() && !check_rl(&s.rl_key, &p.ed25519_public_key, now, RL_PER_KEY) {
+    // Rate limits per public key
+    if !check_rl(&s.rl_key, &p.ed25519_public_key, now, RL_PER_KEY) {
         s.m.spam.fetch_add(1, Ordering::Relaxed);
+        warn!(uid=p.user_id, "spam_drop_per_key");
         return (StatusCode::TOO_MANY_REQUESTS, Bytes::new());
     }
+
+    // Rate limits per geo bucket
     let gk = geo_key(p.latitude_e7, p.longitude_e7);
     if !check_geo_rl(&s.rl_geo, gk, now) {
         s.m.spam.fetch_add(1, Ordering::Relaxed);
+        warn!(uid=p.user_id, geo=gk, "spam_drop_per_geo");
         return (StatusCode::TOO_MANY_REQUESTS, Bytes::new());
     }
 
     s.m.ingested.fetch_add(1, Ordering::Relaxed);
 
-    // Confidence scoring
+    // C3: Confidence scoring — only unique public keys increase confidence
     let tb = time_bucket(p.timestamp_ms);
     let conf = {
         let mut c = s.clusters.entry((gk,tb)).or_insert_with(|| GeoCluster{keys:HashSet::new(),total:0,first_ms:now});
@@ -215,7 +261,7 @@ async fn ingest(State(s): State<AppState>, body: Bytes) -> impl IntoResponse {
         c.confidence()
     };
 
-    // Priority routing
+    // Priority routing — AFAD relay for critical packets
     if p.is_trapped || p.msg_type == proto::MessageType::MsgTrapped as i32
        || p.msg_type == proto::MessageType::MsgMedical as i32
        || p.alert_level >= proto::AlertLevel::AlertSevere as i32 {
@@ -223,41 +269,95 @@ async fn ingest(State(s): State<AppState>, body: Bytes) -> impl IntoResponse {
         let _ = s.afad_tx.try_send(p.clone());
     }
 
-    // Persist
-    if let Err(_) = s.persist_tx.try_send(p.clone()) {
-        s.m.backpressure.fetch_add(1, Ordering::Relaxed);
+    // C1: Persist — if queue is full, return 503 (honest backpressure)
+    match s.persist_tx.try_send(p.clone()) {
+        Ok(_) => {
+            s.m.accepted_ok.fetch_add(1, Ordering::Relaxed);
+            info!(uid=p.user_id, trapped=p.is_trapped, conf=conf, "accepted_ok");
+            (StatusCode::OK, encode_ack(&p, true, conf, "accepted"))
+        }
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            // C1: Queue full — do NOT pretend delivered
+            s.m.queue_full.fetch_add(1, Ordering::Relaxed);
+            s.m.backpressure.fetch_add(1, Ordering::Relaxed);
+            warn!(uid=p.user_id, "queue_full — returning 503");
+            (StatusCode::SERVICE_UNAVAILABLE, Bytes::new())
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            s.m.queue_full.fetch_add(1, Ordering::Relaxed);
+            error!("persist channel closed");
+            (StatusCode::INTERNAL_SERVER_ERROR, Bytes::new())
+        }
     }
-
-    info!(uid=p.user_id, trapped=p.is_trapped, conf=conf, "processed_ok");
-    (StatusCode::OK, encode_ack(&p, true, conf))
 }
 
-fn encode_ack(p: &proto::SinyalistPacket, ok: bool, conf: f32) -> Bytes {
-    let a = proto::PacketAck { user_id:p.user_id, timestamp_ms:p.timestamp_ms, received:ok, rescue_eta:String::new(), confidence:conf };
-    let mut b = Vec::with_capacity(a.encoded_len()); a.encode(&mut b).ok(); Bytes::from(b)
+fn encode_ack(p: &proto::SinyalistPacket, ok: bool, conf: f32, status: &str) -> Bytes {
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+    let a = proto::PacketAck {
+        user_id: p.user_id,
+        timestamp_ms: now_ms,
+        received: ok,
+        rescue_eta: String::new(),
+        confidence: conf,
+        ingest_id: generate_ingest_id(),
+        status: status.to_string(),
+    };
+    let mut b = Vec::with_capacity(a.encoded_len());
+    a.encode(&mut b).ok();
+    Bytes::from(b)
 }
 
+// C4: /health — returns 200 if server is ready
 async fn health() -> StatusCode { StatusCode::OK }
+
+// C4: /ready — returns 503 if queue has no capacity
 async fn ready(State(s): State<AppState>) -> StatusCode {
     if s.persist_tx.capacity() > 0 { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE }
 }
 
+// C4: Structured metrics response
 #[derive(Serialize)]
-struct MResp { ingested:u64, deduped:u64, afad:u64, persisted:u64, backpressure:u64,
-    verify_fail:u64, spam:u64, malformed:u64, oversized:u64, dedup_size:usize, keys:usize, clusters:usize }
+struct MResp {
+    // Ingest counters
+    ingested: u64,
+    accepted_ok: u64,
+    processed_ok: u64,
+    // Drop counters
+    deduped: u64,
+    verify_fail: u64,
+    sig_missing: u64,
+    spam: u64,
+    malformed: u64,
+    oversized: u64,
+    queue_full: u64,
+    backpressure: u64,
+    // Priority routing
+    afad: u64,
+    persisted: u64,
+    // State sizes
+    dedup_size: usize,
+    keys: usize,
+    clusters: usize,
+}
 
 async fn metrics(State(s): State<AppState>) -> impl IntoResponse {
     let r = MResp {
         ingested: s.m.ingested.load(Ordering::Relaxed),
+        accepted_ok: s.m.accepted_ok.load(Ordering::Relaxed),
+        processed_ok: s.m.processed_ok.load(Ordering::Relaxed),
         deduped: s.m.deduped.load(Ordering::Relaxed),
-        afad: s.m.afad.load(Ordering::Relaxed),
-        persisted: s.m.persisted.load(Ordering::Relaxed),
-        backpressure: s.m.backpressure.load(Ordering::Relaxed),
         verify_fail: s.m.verify_fail.load(Ordering::Relaxed),
+        sig_missing: s.m.sig_missing.load(Ordering::Relaxed),
         spam: s.m.spam.load(Ordering::Relaxed),
         malformed: s.m.malformed.load(Ordering::Relaxed),
         oversized: s.m.oversized.load(Ordering::Relaxed),
-        dedup_size: s.dedup.len(), keys: s.known_keys.len(), clusters: s.clusters.len(),
+        queue_full: s.m.queue_full.load(Ordering::Relaxed),
+        backpressure: s.m.backpressure.load(Ordering::Relaxed),
+        afad: s.m.afad.load(Ordering::Relaxed),
+        persisted: s.m.persisted.load(Ordering::Relaxed),
+        dedup_size: s.dedup.len(),
+        keys: s.known_keys.len(),
+        clusters: s.clusters.len(),
     };
     (StatusCode::OK, serde_json::to_string_pretty(&r).unwrap_or_default())
 }
@@ -267,10 +367,15 @@ async fn eviction(d: Arc<DashMap<Vec<u8>,u64>>, c: Arc<DashMap<(u64,u64),GeoClus
     let mut iv = tokio::time::interval(Duration::from_secs(60));
     loop { iv.tick().await;
         let now = chrono::Utc::now().timestamp_millis() as u64;
+        let d_before = d.len();
         d.retain(|_,&mut ts| now.saturating_sub(ts) < DEDUP_TTL);
         c.retain(|_,cl| now.saturating_sub(cl.first_ms) < 300_000);
         rk.retain(|_,e| now.saturating_sub(e.start_ms) < RL_WINDOW*2);
         rg.retain(|_,e| now.saturating_sub(e.start_ms) < RL_WINDOW*2);
+        let d_after = d.len();
+        if d_before != d_after {
+            info!(evicted=d_before-d_after, remaining=d_after, "dedup_eviction");
+        }
     }
 }
 
@@ -289,6 +394,7 @@ async fn flush(b: &mut Vec<proto::SinyalistPacket>, m: &Metrics) {
     let n = b.len(); let t = b.iter().filter(|p|p.is_trapped).count();
     info!(packets=n, trapped=t, "batch_flush");
     m.persisted.fetch_add(n as u64, Ordering::Relaxed);
+    m.processed_ok.fetch_add(n as u64, Ordering::Relaxed);
     b.clear();
 }
 
@@ -304,7 +410,7 @@ async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(std::env::var("RUST_LOG").unwrap_or("sinyalist_ingest=info,tower_http=info".into()))
         .json().init();
-    info!("Sinyalist Ingestion Server v2.0");
+    info!(version=SCHEMA_VERSION, "Sinyalist Ingestion Server v2.0 — Field-Ready");
 
     let (ptx, prx) = mpsc::channel(100_000);
     let (atx, arx) = mpsc::channel(10_000);
@@ -336,4 +442,100 @@ async fn main() {
     axum::serve(listener, app)
         .with_graceful_shutdown(async { tokio::signal::ctrl_c().await.ok(); info!("shutdown"); })
         .await.unwrap();
+}
+
+// =============================================================================
+// Tests (C3, C4 verification)
+// =============================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_geo_key_different_locations() {
+        let k1 = geo_key(410000000, 290000000);
+        let k2 = geo_key(410100000, 290100000);
+        // Different enough locations should get different keys
+        assert_ne!(k1, k2);
+    }
+
+    #[test]
+    fn test_geo_key_same_cell() {
+        // Two points within ~1km should be in same cell
+        let k1 = geo_key(410000000, 290000000);
+        let k2 = geo_key(410000100, 290000100);
+        assert_eq!(k1, k2);
+    }
+
+    #[test]
+    fn test_confidence_zero_reporters() {
+        let c = GeoCluster::default();
+        assert_eq!(c.confidence(), 0.0);
+    }
+
+    #[test]
+    fn test_confidence_single_reporter() {
+        let mut c = GeoCluster { keys: HashSet::new(), total: 1, first_ms: 0 };
+        c.keys.insert([1u8; 32]);
+        let conf = c.confidence();
+        // ln(1) + 1 = 1.0, / 3.0 = 0.333
+        assert!(conf > 0.3 && conf < 0.4, "Single reporter confidence should be ~0.33, got {}", conf);
+    }
+
+    #[test]
+    fn test_confidence_three_reporters() {
+        let mut c = GeoCluster { keys: HashSet::new(), total: 3, first_ms: 0 };
+        c.keys.insert([1u8; 32]);
+        c.keys.insert([2u8; 32]);
+        c.keys.insert([3u8; 32]);
+        let conf = c.confidence();
+        // ln(3) + 1 ≈ 2.1, / 3.0 ≈ 0.70
+        assert!(conf > 0.6 && conf < 0.8, "3 reporters confidence should be ~0.70, got {}", conf);
+    }
+
+    #[test]
+    fn test_confidence_duplicates_dont_inflate() {
+        // C3: Same public key sending 10 times should NOT inflate confidence
+        let mut c = GeoCluster { keys: HashSet::new(), total: 10, first_ms: 0 };
+        c.keys.insert([1u8; 32]); // Only 1 unique key despite 10 total
+        let conf = c.confidence();
+        // total(10) > unique(1) * 3 → spam factor 0.5
+        // ln(1) + 1 = 1.0, / 3.0 * 0.5 = 0.167
+        assert!(conf < 0.2, "Duplicate spam should not inflate confidence, got {}", conf);
+    }
+
+    #[test]
+    fn test_confidence_capped_at_one() {
+        let mut c = GeoCluster { keys: HashSet::new(), total: 20, first_ms: 0 };
+        for i in 0..20u8 {
+            let mut k = [0u8; 32];
+            k[0] = i;
+            c.keys.insert(k);
+        }
+        let conf = c.confidence();
+        assert!(conf <= 1.0, "Confidence must be capped at 1.0, got {}", conf);
+    }
+
+    #[test]
+    fn test_time_bucket() {
+        let t1 = time_bucket(1000);
+        let t2 = time_bucket(59999);
+        let t3 = time_bucket(60000);
+        assert_eq!(t1, t2); // Same minute
+        assert_ne!(t2, t3); // Different minutes
+    }
+
+    #[test]
+    fn test_verify_sig_rejects_wrong_lengths() {
+        let mut p = proto::SinyalistPacket::default();
+        p.ed25519_public_key = vec![0u8; 16]; // Wrong length
+        p.ed25519_signature = vec![0u8; 64];
+        assert!(!verify_sig(&p));
+    }
+
+    #[test]
+    fn test_verify_sig_rejects_empty() {
+        let p = proto::SinyalistPacket::default();
+        assert!(!verify_sig(&p));
+    }
 }

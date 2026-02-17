@@ -1,5 +1,8 @@
 // =============================================================================
-// SINYALIST — Main Application Entry Point
+// SINYALIST — Main Application Entry Point (v2 Field-Ready)
+// =============================================================================
+// Initializes: Ed25519 keypair, seismic engine, foreground service,
+//              connectivity manager with real health probing.
 // =============================================================================
 
 import 'dart:async';
@@ -9,6 +12,7 @@ import 'package:flutter/services.dart';
 import 'package:sinyalist/core/theme/sinyalist_theme.dart';
 import 'package:sinyalist/core/bridge/native_bridge.dart';
 import 'package:sinyalist/core/connectivity/connectivity_manager.dart';
+import 'package:sinyalist/core/crypto/keypair_manager.dart';
 import 'package:sinyalist/screens/home_screen.dart';
 
 void main() {
@@ -32,9 +36,11 @@ class SinyalistApp extends StatefulWidget {
 
 class _SinyalistAppState extends State<SinyalistApp> with WidgetsBindingObserver {
   final ConnectivityManager _connectivity = ConnectivityManager();
+  final KeypairManager _keypairManager = KeypairManager();
   bool _isEmergency = false;
   bool _isInitialized = false;
   StreamSubscription? _seismicSub;
+  String _initStatus = 'Initializing...';
 
   @override
   void initState() {
@@ -44,28 +50,47 @@ class _SinyalistAppState extends State<SinyalistApp> with WidgetsBindingObserver
   }
 
   Future<void> _initializeSystem() async {
-    // Native bridges only work on Android
+    // Step 1: Initialize Ed25519 keypair
+    try {
+      setState(() => _initStatus = 'Generating security keys...');
+      await _keypairManager.initialize();
+      debugPrint('[Main] Ed25519 keypair ready');
+    } catch (e) {
+      debugPrint('[Main] Keypair init failed: $e');
+    }
+
+    // Step 2: Native bridges only work on Android
     try {
       if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+        setState(() => _initStatus = 'Starting seismic engine...');
         await SeismicBridge.initialize();
         await ServiceBridge.startMonitoring();
         await SeismicBridge.start();
         _seismicSub = SeismicBridge.events.listen(_onSeismicEvent);
+        debugPrint('[Main] Seismic engine started');
       }
     } catch (e) {
-      debugPrint('Native init skipped (non-Android): $e');
+      debugPrint('[Main] Native init skipped (non-Android): $e');
     }
 
+    // Step 3: Initialize connectivity with real health probing
     try {
+      setState(() => _initStatus = 'Checking connectivity...');
       await _connectivity.initialize();
+      debugPrint('[Main] Connectivity manager ready');
     } catch (e) {
-      debugPrint('Connectivity init skipped: $e');
+      debugPrint('[Main] Connectivity init skipped: $e');
     }
 
-    setState(() => _isInitialized = true);
+    setState(() {
+      _isInitialized = true;
+      _initStatus = 'Ready';
+    });
+    debugPrint('[Main] System initialization complete');
   }
 
   void _onSeismicEvent(SeismicEvent event) {
+    debugPrint('[Main] Seismic event: level=${event.level}, peakG=${event.peakG}');
     if (event.isCritical && !_isEmergency) {
       setState(() => _isEmergency = true);
       try {
@@ -78,6 +103,7 @@ class _SinyalistAppState extends State<SinyalistApp> with WidgetsBindingObserver
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      debugPrint('[Main] App resumed — re-evaluating connectivity');
       try {
         _connectivity.initialize();
       } catch (_) {}
@@ -124,25 +150,26 @@ class _SinyalistAppState extends State<SinyalistApp> with WidgetsBindingObserver
               isEmergency: _isEmergency,
               onEmergencyToggle: _toggleEmergency,
             )
-          : const _SplashScreen(),
+          : _SplashScreen(status: _initStatus),
     );
   }
 }
 
 class _SplashScreen extends StatelessWidget {
-  const _SplashScreen();
+  final String status;
+  const _SplashScreen({required this.status});
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
+    return Scaffold(
       backgroundColor: SinyalistColors.oledBlack,
       body: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.shield, size: 64, color: SinyalistColors.emergencyRed),
-            SizedBox(height: 24),
-            Text(
+            const Icon(Icons.shield, size: 64, color: SinyalistColors.emergencyRed),
+            const SizedBox(height: 24),
+            const Text(
               'SINYALIST',
               style: TextStyle(
                 fontSize: 32,
@@ -151,14 +178,14 @@ class _SplashScreen extends StatelessWidget {
                 letterSpacing: 4,
               ),
             ),
-            SizedBox(height: 12),
+            const SizedBox(height: 12),
             Text(
-              'Initializing seismic monitoring...',
-              style: TextStyle(
+              status,
+              style: const TextStyle(
                   fontSize: 14, color: SinyalistColors.oledTextSecondary),
             ),
-            SizedBox(height: 32),
-            SizedBox(
+            const SizedBox(height: 32),
+            const SizedBox(
               width: 24,
               height: 24,
               child: CircularProgressIndicator(
