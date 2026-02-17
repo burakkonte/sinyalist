@@ -3,6 +3,7 @@
 // =============================================================================
 
 import 'dart:async';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -10,15 +11,21 @@ import 'package:flutter/services.dart';
 import 'package:sinyalist/core/theme/sinyalist_theme.dart';
 import 'package:sinyalist/core/bridge/native_bridge.dart';
 import 'package:sinyalist/core/connectivity/connectivity_manager.dart';
+import 'package:sinyalist/core/crypto/keypair_manager.dart';
+import 'package:sinyalist/core/delivery/delivery_state_machine.dart';
 
 class HomeScreen extends StatefulWidget {
   final ConnectivityManager connectivity;
+  final DeliveryStateMachine deliveryFsm;
+  final KeypairManager keypairManager;
   final bool isEmergency;
   final VoidCallback onEmergencyToggle;
 
   const HomeScreen({
     super.key,
     required this.connectivity,
+    required this.deliveryFsm,
+    required this.keypairManager,
     required this.isEmergency,
     required this.onEmergencyToggle,
   });
@@ -362,20 +369,135 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// Build a proper protobuf-encoded SinyalistPacket (without signature fields).
+  /// The DeliveryStateMachine will append Ed25519 signature and public key.
+  Uint8List _buildTrappedPacket() {
+    final builder = BytesBuilder();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final rng = Random.secure();
+
+    // Generate 16-byte packet_id (UUID v4)
+    final packetId = Uint8List(16);
+    for (int i = 0; i < 16; i++) {
+      packetId[i] = rng.nextInt(256);
+    }
+    // Set version (4) and variant (RFC 4122)
+    packetId[6] = (packetId[6] & 0x0F) | 0x40;
+    packetId[8] = (packetId[8] & 0x3F) | 0x80;
+
+    // Helper: write varint
+    void writeVarint(int value) {
+      var v = value;
+      while (v > 0x7F) {
+        builder.addByte((v & 0x7F) | 0x80);
+        v >>= 7;
+      }
+      builder.addByte(v & 0x7F);
+    }
+
+    // Helper: write a protobuf field tag
+    void writeTag(int fieldNumber, int wireType) {
+      writeVarint((fieldNumber << 3) | wireType);
+    }
+
+    // Helper: write fixed64
+    void writeFixed64(int fieldNumber, int value) {
+      writeTag(fieldNumber, 1); // wire type 1 = 64-bit
+      final bd = ByteData(8);
+      bd.setUint64(0, value, Endian.little);
+      builder.add(bd.buffer.asUint8List());
+    }
+
+    // Helper: write varint field
+    void writeVarintField(int fieldNumber, int value) {
+      if (value == 0) return; // protobuf default, skip
+      writeTag(fieldNumber, 0);
+      writeVarint(value);
+    }
+
+    // Helper: write bytes field
+    void writeBytesField(int fieldNumber, Uint8List data) {
+      writeTag(fieldNumber, 2);
+      writeVarint(data.length);
+      builder.add(data);
+    }
+
+    // Helper: write sint32 (zigzag encoded)
+    void writeSint32Field(int fieldNumber, int value) {
+      writeTag(fieldNumber, 0);
+      final zigzag = (value << 1) ^ (value >> 31);
+      writeVarint(zigzag & 0xFFFFFFFF);
+    }
+
+    // field 1: user_id (fixed64) — use device hash
+    writeFixed64(1, now ~/ 1000); // Use seconds as pseudo user_id
+
+    // field 3: latitude_e7 (sint32) — Istanbul default ~41.01N
+    writeSint32Field(3, 410100000);
+
+    // field 4: longitude_e7 (sint32) — Istanbul default ~28.97E
+    writeSint32Field(4, 289700000);
+
+    // field 6: accuracy_cm (uint32)
+    writeVarintField(6, 1500); // 15 meters
+
+    // field 13: battery_percent
+    writeVarintField(13, 50); // placeholder
+
+    // field 16: timestamp_ms (fixed64)
+    writeFixed64(16, now);
+
+    // field 21: is_trapped (bool/varint) = true
+    writeVarintField(21, 1);
+
+    // field 24: packet_id (bytes, 16B UUID)
+    writeBytesField(24, packetId);
+
+    // field 25: created_at_ms (fixed64)
+    writeFixed64(25, now);
+
+    // field 26: msg_type = MSG_TRAPPED (1)
+    writeVarintField(26, 1);
+
+    // field 27: priority = PRIORITY_CRITICAL (1)
+    writeVarintField(27, 1);
+
+    return builder.toBytes();
+  }
+
   Future<void> _sendSosPacket() async {
     if (_isSending || _sosSent) return;
 
+    // Check rate limit via DeliveryStateMachine
+    if (!widget.deliveryFsm.canSend) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Lütfen bekleyin (${widget.deliveryFsm.remainingSends} hak kaldı)',
+              style: const TextStyle(inherit: true, fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            backgroundColor: SinyalistColors.emergencyAmber,
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
     setState(() => _isSending = true);
 
+    // Update internet availability on the FSM
+    widget.deliveryFsm.internetAvailable = widget.connectivity.state.hasInternet;
+
     try {
-      // Attempt to send via connectivity cascade
-      final result = await widget.connectivity.sendPacket(
-        Uint8List.fromList([
-          // Minimal SinyalistPacket: user_id=1, is_trapped=true, timestamp=now
-          9, 1, 0, 0, 0, 0, 0, 0, 1, // field 1: user_id = 1
-          136, 1, 1,                   // field 17: is_trapped = true
-        ]),
-      );
+      // Build a real protobuf packet (without signature — FSM signs it)
+      final rawPacket = _buildTrappedPacket();
+      debugPrint('[HomeScreen] Built TRAPPED packet: ${rawPacket.length} bytes');
+
+      // Deliver through the state machine (signs -> internet -> SMS -> BLE)
+      final result = await widget.deliveryFsm.deliver(rawPacket);
 
       if (mounted) {
         setState(() {
@@ -383,21 +505,28 @@ class _HomeScreenState extends State<HomeScreen> {
           _sosSent = true;
         });
 
+        final message = result.isDelivered
+            ? 'Acil sinyal gönderildi (${result.transport ?? "?"}) '
+                '${result.confidence != null ? "güven=${(result.confidence! * 100).toInt()}%" : ""}'
+            : result.error == 'Rate limited'
+                ? 'Çok hızlı gönderiyorsunuz — lütfen bekleyin'
+                : 'Sinyal tamponlandı — bağlantı kurulunca iletilecek';
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              result.isSuccess
-                  ? 'Acil sinyal gönderildi (${result.transport?.displayName})'
-                  : 'Sinyal tamponlandı — bağlantı kurulunca iletilecek',
+              message,
               style: const TextStyle(inherit: true, fontSize: 16, fontWeight: FontWeight.w600),
             ),
-            backgroundColor: result.isSuccess
+            backgroundColor: result.isDelivered
                 ? SinyalistColors.safeGreen
                 : SinyalistColors.emergencyAmber,
             duration: const Duration(seconds: 4),
             behavior: SnackBarBehavior.floating,
           ),
         );
+
+        debugPrint('[HomeScreen] Delivery result: $result');
 
         // Allow re-sending after 10 seconds
         Future.delayed(const Duration(seconds: 10), () {
@@ -409,7 +538,7 @@ class _HomeScreenState extends State<HomeScreen> {
         setState(() => _isSending = false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Sinyal tamponlandı: $e',
+            content: Text('Sinyal hatası: $e',
                 style: const TextStyle(inherit: true)),
             backgroundColor: SinyalistColors.emergencyAmber,
           ),

@@ -13,6 +13,7 @@ import 'package:sinyalist/core/theme/sinyalist_theme.dart';
 import 'package:sinyalist/core/bridge/native_bridge.dart';
 import 'package:sinyalist/core/connectivity/connectivity_manager.dart';
 import 'package:sinyalist/core/crypto/keypair_manager.dart';
+import 'package:sinyalist/core/delivery/delivery_state_machine.dart';
 import 'package:sinyalist/screens/home_screen.dart';
 
 void main() {
@@ -37,6 +38,7 @@ class SinyalistApp extends StatefulWidget {
 class _SinyalistAppState extends State<SinyalistApp> with WidgetsBindingObserver {
   final ConnectivityManager _connectivity = ConnectivityManager();
   final KeypairManager _keypairManager = KeypairManager();
+  late final DeliveryStateMachine _deliveryFsm;
   bool _isEmergency = false;
   bool _isInitialized = false;
   StreamSubscription? _seismicSub;
@@ -45,6 +47,10 @@ class _SinyalistAppState extends State<SinyalistApp> with WidgetsBindingObserver
   @override
   void initState() {
     super.initState();
+    _deliveryFsm = DeliveryStateMachine(
+      ingestClient: _connectivity.ingestClient,
+      keypairManager: _keypairManager,
+    );
     WidgetsBinding.instance.addObserver(this);
     _initializeSystem();
   }
@@ -147,6 +153,8 @@ class _SinyalistAppState extends State<SinyalistApp> with WidgetsBindingObserver
               // FIX: UniqueKey forces clean rebuild — no stale GlobalKeys
               key: ValueKey<bool>(_isEmergency),
               connectivity: _connectivity,
+              deliveryFsm: _deliveryFsm,
+              keypairManager: _keypairManager,
               isEmergency: _isEmergency,
               onEmergencyToggle: _toggleEmergency,
             )
