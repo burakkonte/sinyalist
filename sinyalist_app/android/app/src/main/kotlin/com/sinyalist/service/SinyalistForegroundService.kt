@@ -97,13 +97,16 @@ class SinyalistForegroundService : Service() {
     private fun startMonitoring() {
         // Acquire partial wake lock
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        // FIX: acquire for 1 hour instead of 24 hours.  The watchdog (every 30s)
+        // renews the lock via renewWakeLock() as long as monitoring is active.
+        // A 24-hour hold would permanently drain the battery even when unused.
         wakeLock = pm.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
             "sinyalist:seismic_monitor"
         ).apply {
-            acquire(24 * 60 * 60 * 1000L)
+            acquire(60 * 60 * 1000L) // 1 hour; renewed by watchdog
         }
-        logState("wakelock_acquired", "24h partial wake lock")
+        logState("wakelock_acquired", "1h partial wake lock (renewable)")
 
         // Initialize seismic engine
         seismicEngine = SeismicEngine(this).apply {
@@ -195,6 +198,16 @@ class SinyalistForegroundService : Service() {
 
     private fun performWatchdogCheck() {
         lastWatchdogCheckMs = System.currentTimeMillis()
+
+        // FIX: renew the 1-hour wake lock so it never expires while monitoring is active.
+        // We acquired it for only 1 hour (not 24h), so the watchdog must keep it alive.
+        wakeLock?.let { wl ->
+            if (wl.isHeld) {
+                wl.release()
+            }
+            wl.acquire(60 * 60 * 1000L) // renew for another hour
+            logState("wakelock_renewed", "1h wake lock renewed by watchdog")
+        }
 
         // Check seismic engine
         val seismicOk = seismicEngine != null

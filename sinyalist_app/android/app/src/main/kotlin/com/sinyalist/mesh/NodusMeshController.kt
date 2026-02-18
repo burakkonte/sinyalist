@@ -182,8 +182,11 @@ data class MeshPacket(
         // Try to extract packet_id (field 24, bytes) from protobuf
         val packetId = extractPacketId(payload)
         if (packetId != null && packetId.size == 16) return packetId
-        // Fallback: first 8 bytes (user_id) + timestamp bytes
+        // FIX: guard before slicing — payload.size < 16 would cause
+        // IndexOutOfBoundsException on the slice below.  Use the whole
+        // payload as the dedup key when it is too short to split.
         if (payload.size < 16) return payload
+        // Fallback: first 8 bytes (user_id fixed64) + last 8 bytes (timestamp)
         return payload.sliceArray(0..7) + payload.sliceArray(payload.size - 8 until payload.size)
     }
 
@@ -712,7 +715,28 @@ class NodusMeshController(private val context: Context) {
                 ttlDropCount.incrementAndGet()
                 continue
             }
-            totalRelayedCount.incrementAndGet()
+
+            // FIX: actually send the packet to the connected peer via GATT notification.
+            // The old code incremented the counter but never delivered the payload —
+            // store-carry-forward was completely silent.  We update the characteristic
+            // value and trigger a notification on the target device.
+            val characteristic = gattServer
+                ?.getService(SERVICE_UUID)
+                ?.getCharacteristic(PACKET_CHAR_UUID)
+            if (characteristic != null) {
+                characteristic.value = packet.payload
+                val notified = gattServer?.notifyCharacteristicChanged(
+                    targetDevice, characteristic, false
+                ) ?: false
+                if (notified == true) {
+                    totalRelayedCount.incrementAndGet()
+                    Log.d(TAG, "Relayed ${packet.payload.size}B to ${targetDevice.address} (priority=${packet.priority})")
+                } else {
+                    Log.w(TAG, "GATT notify returned false for ${targetDevice.address} — peer may have disconnected")
+                }
+            } else {
+                Log.w(TAG, "GATT characteristic not found — server not ready for relay")
+            }
         }
 
         emitStats()

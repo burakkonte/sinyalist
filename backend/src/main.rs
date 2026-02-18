@@ -88,8 +88,12 @@ pub mod proto {
 
 // Geo-cluster: grid-cell confidence scoring (C3)
 fn geo_key(lat_e7: i32, lon_e7: i32) -> u64 {
-    let la = (lat_e7 / 9000) as i64; // ~1km cells
-    let lo = (lon_e7 / 9000) as i64;
+    // FIX: old divisor 9000 → cells were ~90 km wide (9000 * 1e-7 deg ≈ 0.09°
+    // ≈ ~10 km latitude, even larger in practice).  Correct divisor for ~1 km
+    // cells: 1 degree ≈ 111 000 m, so 1 km ≈ 0.009° = 90 000 units in e7.
+    // Using 90_000 gives cells of ~1 km × ~1 km near Istanbul (41°N).
+    let la = (lat_e7 / 90_000) as i64;
+    let lo = (lon_e7 / 90_000) as i64;
     ((la as u64) << 32) | (lo as u64 & 0xFFFFFFFF)
 }
 fn time_bucket(ms: u64) -> u64 { ms / 60_000 }
@@ -456,17 +460,19 @@ mod tests {
 
     #[test]
     fn test_geo_key_different_locations() {
+        // Two points ~10 km apart (Istanbul centre vs ~10 km north):
+        // 410000000 e7 = 41.0000°, 411000000 e7 = 41.1000° → ~11 km apart → different cells
         let k1 = geo_key(410000000, 290000000);
-        let k2 = geo_key(410100000, 290100000);
-        // Different enough locations should get different keys
+        let k2 = geo_key(411000000, 291000000);
         assert_ne!(k1, k2);
     }
 
     #[test]
     fn test_geo_key_same_cell() {
-        // Two points within ~1km should be in same cell
+        // Two points ~100 m apart (90_000 units = ~1 km cell width).
+        // 10_000 units = ~0.001° ≈ ~111 m — must land in the same cell.
         let k1 = geo_key(410000000, 290000000);
-        let k2 = geo_key(410000100, 290000100);
+        let k2 = geo_key(410010000, 290010000);
         assert_eq!(k1, k2);
     }
 

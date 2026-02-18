@@ -79,57 +79,42 @@ class SmsPayload {
 
   /// Serialize to compact binary (38 bytes).
   Uint8List toBytes() {
-    final buffer = ByteData(38);
+    // Single buffer — both writes and reads go through `result`/`bd` which
+    // are views of the SAME underlying memory.  The old code wrote to a
+    // throwaway `ByteData(38)` and read from a separate `Uint8List(38)`,
+    // so every field except packet_id came out as all-zeros (data corruption).
+    final result = Uint8List(38);
+    final bd = ByteData.sublistView(result); // view over result — same memory
     int offset = 0;
 
     // packet_id: 16 bytes
-    final result = Uint8List(38);
     for (int i = 0; i < 16; i++) {
       result[i] = i < packetId.length ? packetId[i] : 0;
     }
     offset = 16;
 
     // lat_e7: 4 bytes (signed, big-endian)
-    buffer.setInt32(0, latitudeE7, Endian.big);
-    result[offset] = buffer.getUint8(0);
-    result[offset + 1] = buffer.getUint8(1);
-    result[offset + 2] = buffer.getUint8(2);
-    result[offset + 3] = buffer.getUint8(3);
+    bd.setInt32(offset, latitudeE7, Endian.big);
     offset += 4;
 
     // lon_e7: 4 bytes (signed, big-endian)
-    buffer.setInt32(0, longitudeE7, Endian.big);
-    result[offset] = buffer.getUint8(0);
-    result[offset + 1] = buffer.getUint8(1);
-    result[offset + 2] = buffer.getUint8(2);
-    result[offset + 3] = buffer.getUint8(3);
+    bd.setInt32(offset, longitudeE7, Endian.big);
     offset += 4;
 
     // accuracy_cm: 4 bytes (unsigned, big-endian)
-    buffer.setUint32(0, accuracyCm, Endian.big);
-    result[offset] = buffer.getUint8(0);
-    result[offset + 1] = buffer.getUint8(1);
-    result[offset + 2] = buffer.getUint8(2);
-    result[offset + 3] = buffer.getUint8(3);
+    bd.setUint32(offset, accuracyCm, Endian.big);
     offset += 4;
 
     // trapped_status: 1 byte
     result[offset] = trappedStatus & 0xFF;
     offset += 1;
 
-    // created_at_ms: 8 bytes (big-endian)
+    // created_at_ms: 8 bytes (big-endian, split into two uint32 because
+    // Dart's ByteData.setUint64 is not available on all platforms)
     final msHigh = (createdAtMs >> 32) & 0xFFFFFFFF;
     final msLow = createdAtMs & 0xFFFFFFFF;
-    buffer.setUint32(0, msHigh, Endian.big);
-    result[offset] = buffer.getUint8(0);
-    result[offset + 1] = buffer.getUint8(1);
-    result[offset + 2] = buffer.getUint8(2);
-    result[offset + 3] = buffer.getUint8(3);
-    buffer.setUint32(0, msLow, Endian.big);
-    result[offset + 4] = buffer.getUint8(0);
-    result[offset + 5] = buffer.getUint8(1);
-    result[offset + 6] = buffer.getUint8(2);
-    result[offset + 7] = buffer.getUint8(3);
+    bd.setUint32(offset, msHigh, Endian.big);
+    bd.setUint32(offset + 4, msLow, Endian.big);
     offset += 8;
 
     // msg_type: 1 byte

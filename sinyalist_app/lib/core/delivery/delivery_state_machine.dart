@@ -278,30 +278,18 @@ class DeliveryStateMachine extends ChangeNotifier {
     final pubKey = _keypairManager.publicKeyBytes!;
 
     // Append protobuf fields:
-    // field 28 (ed25519_signature): tag = (28 << 3) | 2 = 226, length-delimited
-    // field 29 (ed25519_public_key): tag = (29 << 3) | 2 = 234, length-delimited
-    final builder = BytesBuilder();
-    builder.add(rawPacket);
-
-    // Field 28: signature (64 bytes)
-    builder.addByte(226); // tag
-    builder.addByte(1);   // varint continuation
-    builder.addByte(64);  // length = 64 (encoded as varint: 0x80|0x00... wait, 64 < 128)
-    // Actually: tag for field 28 wire type 2 = (28 << 3) | 2 = 224 + 2 = 226
-    // But 226 > 127, needs varint encoding: 226 & 0x7F | 0x80 = 0xE2, then 226 >> 7 = 1
-    // Correct protobuf tag encoding for field 28, wire type 2:
-    // field_number << 3 | wire_type = 28 * 8 + 2 = 226
-    // 226 in varint = [0xE2, 0x01]
-    // Let me redo this properly...
-
-    // Actually let me rebuild properly
+    //   field 28 (ed25519_signature):  tag varint = (28 << 3) | 2 = 226 → [0xE2, 0x01]
+    //   field 29 (ed25519_public_key): tag varint = (29 << 3) | 2 = 234 → [0xEA, 0x01]
+    // _writeProtobufField handles correct varint-encoded tag + length + data.
+    // FIX: removed dead first BytesBuilder (`builder`) that was allocated but
+    // never used — only `result` is needed.
     final result = BytesBuilder();
     result.add(rawPacket);
 
-    // Encode field 28 (signature)
+    // Encode field 28 (signature, 64 bytes)
     _writeProtobufField(result, 28, signature);
 
-    // Encode field 29 (public key)
+    // Encode field 29 (public key, 32 bytes)
     _writeProtobufField(result, 29, pubKey);
 
     return result.toBytes();
