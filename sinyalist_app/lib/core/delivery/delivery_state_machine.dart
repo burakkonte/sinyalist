@@ -237,8 +237,10 @@ class DeliveryStateMachine extends ChangeNotifier {
       debugPrint('[$_tag] SMS not yet integrated with native sender');
     }
 
-    // Step 4: Try BLE mesh
-    if (config.bleEnabled) {
+    // Step 4: Try BLE mesh (Android only — plugin not available on web)
+    if (config.bleEnabled &&
+        !kIsWeb &&
+        defaultTargetPlatform == TargetPlatform.android) {
       _transition(DeliveryState.sendingBle, packetIdHex);
       try {
         await MeshBridge.broadcastPacket(signedPacket);
@@ -252,6 +254,8 @@ class DeliveryStateMachine extends ChangeNotifier {
       } catch (e) {
         debugPrint('[$_tag] BLE mesh injection failed: $e');
       }
+    } else if (config.bleEnabled) {
+      debugPrint('[$_tag] BLE mesh skipped (not supported on ${kIsWeb ? "web" : defaultTargetPlatform.name})');
     }
 
     // All transports exhausted

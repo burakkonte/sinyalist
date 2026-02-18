@@ -93,16 +93,18 @@ class ConnectivityManager extends ChangeNotifier {
   static const _healthCheckInterval = Duration(seconds: 15);
   static const _maxRetries = 3;
 
-  // Backend URL — configurable via environment
+  // Backend URL — automatically set per platform
   late final IngestClient _ingestClient;
-  String _backendUrl = 'http://10.0.2.2:8080'; // Android emulator default
+  // 10.0.2.2 is the Android emulator gateway to the host machine.
+  // On web (Chrome on host), use localhost directly.
+  static String get _defaultBackendUrl =>
+      kIsWeb ? 'http://localhost:8080' : 'http://10.0.2.2:8080';
 
+  late String _backendUrl;
   IngestClient get ingestClient => _ingestClient;
 
   ConnectivityManager({String? backendUrl}) {
-    if (backendUrl != null) {
-      _backendUrl = backendUrl;
-    }
+    _backendUrl = backendUrl ?? _defaultBackendUrl;
     _ingestClient = IngestClient(
       baseUrl: _backendUrl,
       maxRetries: _maxRetries,

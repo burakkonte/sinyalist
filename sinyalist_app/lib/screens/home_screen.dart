@@ -516,7 +516,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 '${result.confidence != null ? "güven=${(result.confidence! * 100).toInt()}%" : ""}'
             : result.error == 'Rate limited'
                 ? 'Çok hızlı gönderiyorsunuz — lütfen bekleyin'
-                : 'Sinyal tamponlandı — bağlantı kurulunca iletilecek';
+                : kIsWeb
+                    ? 'Web demo: SMS ve BLE desteklenmiyor. Backend çalışıyorsa internet üzerinden gönderilir.'
+                    : 'Sinyal tamponlandı — bağlantı kurulunca iletilecek';
 
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
