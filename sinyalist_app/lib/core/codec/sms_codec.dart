@@ -171,8 +171,6 @@ class SmsCodec {
   static const String _prefix = 'SY1';
   static const String _multipartPrefix = 'SY1M';
   static const int _singleSmsMaxChars = 160;
-  // Reserve space for header: "SY1|" (4) + "|" (1) + CRC (8) = 13 chars
-  static const int _singlePayloadMaxChars = _singleSmsMaxChars - 13;
   // Multipart header: "SY1M|xx/xx|" (11) + "|" (1) + CRC (8) = 20 chars
   static const int _multipartPayloadMaxChars = _singleSmsMaxChars - 20;
 

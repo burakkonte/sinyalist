@@ -7,7 +7,6 @@
 // =============================================================================
 
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:cryptography/cryptography.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';

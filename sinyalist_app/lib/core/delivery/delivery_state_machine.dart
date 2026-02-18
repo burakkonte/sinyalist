@@ -126,11 +126,7 @@ class DeliveryStateMachine extends ChangeNotifier {
   DeliveryState get currentState => _currentState;
 
   // Internet availability (set externally by connectivity manager)
-  bool _internetAvailable = false;
-  bool get internetAvailable => _internetAvailable;
-  set internetAvailable(bool value) {
-    _internetAvailable = value;
-  }
+  bool internetAvailable = false;
 
   DeliveryStateMachine({
     required IngestClient ingestClient,
@@ -209,7 +205,7 @@ class DeliveryStateMachine extends ChangeNotifier {
     }
 
     // Step 2: Try Internet
-    if (_internetAvailable) {
+    if (internetAvailable) {
       _transition(DeliveryState.sendingInternet, packetIdHex);
       final ack = await _ingestClient.send(signedPacket);
 

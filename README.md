@@ -57,11 +57,13 @@ Sinyalist detects seismic events on-device using raw accelerometer data, then de
 
 ## Quick Start
 
+> **All commands below must be run from the repository root** (`D:\Sinyalist_v2_Field_Reliable\` or wherever you cloned the repo), not from inside `sinyalist_app\` or `backend\`.
+
 ### Backend
 
 ```powershell
-cd backend
-cargo build --release
+# From repo root:
+cd D:\Sinyalist_v2_Field_Reliable\backend   # adjust path as needed
 $env:RUST_LOG = "info"
 cargo run --release
 # Server listens on http://localhost:8080
@@ -71,35 +73,38 @@ cargo run --release
 ### Flutter App (Android)
 
 ```powershell
-cd sinyalist_app
+# From repo root:
+cd D:\Sinyalist_v2_Field_Reliable\sinyalist_app
 flutter pub get
-flutter run             # Debug on connected device
+flutter run             # Debug on connected Android device
 flutter build apk       # Release APK
 ```
 
 ### Flutter App (Web — limited)
 
 ```powershell
-cd sinyalist_app
-flutter run -d chrome   # Seismic engine and BLE mesh are Android-only
+# From repo root:
+cd D:\Sinyalist_v2_Field_Reliable\sinyalist_app
+flutter run -d chrome   # Seismic engine and BLE mesh are Android-only on web
 ```
 
 ### Load Test Tool
 
 ```powershell
-cd tools\loadtest
+# From repo root:
+cd D:\Sinyalist_v2_Field_Reliable\tools\loadtest
 cargo run --release -- --url http://localhost:8080 --rate 100 --duration 30
 ```
 
 ### Run Tests
 
 ```powershell
-# Backend (Rust)
-cd backend
+# Backend (Rust) — from repo root:
+cd D:\Sinyalist_v2_Field_Reliable\backend
 cargo test -- --nocapture
 
-# Flutter (Dart — SMS codec, CRC32)
-cd sinyalist_app
+# Flutter (Dart — SMS codec, CRC32, widget) — from repo root:
+cd D:\Sinyalist_v2_Field_Reliable\sinyalist_app
 flutter test
 ```
 

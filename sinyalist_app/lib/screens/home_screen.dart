@@ -160,7 +160,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             ? SinyalistColors.emergencyAmber
                             : SinyalistColors.emergencyRed,
                         disabledBackgroundColor: _isSending
-                            ? SinyalistColors.emergencyRed.withOpacity(0.7)
+                            ? SinyalistColors.emergencyRed.withValues(alpha: 0.7)
                             : SinyalistColors.emergencyAmber,
                         foregroundColor: Colors.white,
                         disabledForegroundColor: Colors.white,
@@ -615,10 +615,10 @@ class _DailyStatusHeader extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: SinyalistColors.professionalGreen.withOpacity(0.08),
+        color: SinyalistColors.professionalGreen.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-            color: SinyalistColors.professionalGreen.withOpacity(0.2)),
+            color: SinyalistColors.professionalGreen.withValues(alpha: 0.2)),
       ),
       child: const Row(
         children: [

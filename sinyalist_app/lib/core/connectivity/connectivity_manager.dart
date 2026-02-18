@@ -8,7 +8,6 @@
 // =============================================================================
 
 import 'dart:async';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:sinyalist/core/bridge/native_bridge.dart';
 import 'package:sinyalist/core/delivery/ingest_client.dart';

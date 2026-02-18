@@ -161,7 +161,7 @@ void main() {
 
       final messages = SmsCodec.encode(payload);
       // Corrupt the CRC
-      final corrupted = messages[0].substring(0, messages[0].length - 2) + 'XX';
+      final corrupted = '${messages[0].substring(0, messages[0].length - 2)}XX';
 
       final decoded = SmsCodec.decodeSingle(corrupted);
       expect(decoded, isNull);
