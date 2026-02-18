@@ -1,9 +1,10 @@
-
 .claude/
 
+# Flutter build output and tool cache
+sinyalist_app/build/
+sinyalist_app/.dart_tool/chrome-device/
+sinyalist_app/.dart_tool/flutter_build/
+sinyalist_app/.dart_tool/hooks_runner/
 
-.claude/
-
-
-.claude/
-
+# Rust build output
+backend/target/
