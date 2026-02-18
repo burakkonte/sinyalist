@@ -400,11 +400,17 @@ class _HomeScreenState extends State<HomeScreen> {
       writeVarint((fieldNumber << 3) | wireType);
     }
 
-    // Helper: write fixed64
+    // Helper: write fixed64 (little-endian, 8 bytes).
+    // Uses two setUint32 calls instead of setUint64 because dart2js (web)
+    // does not support ByteData.setUint64 / getUint64.
     void writeFixed64(int fieldNumber, int value) {
       writeTag(fieldNumber, 1); // wire type 1 = 64-bit
       final bd = ByteData(8);
-      bd.setUint64(0, value, Endian.little);
+      // Dart int is 64-bit on VM but 53-bit on JS — timestamps fit in 53 bits.
+      final lo = value & 0xFFFFFFFF;
+      final hi = (value >> 32) & 0xFFFFFFFF;
+      bd.setUint32(0, lo, Endian.little); // low 32 bits first (little-endian)
+      bd.setUint32(4, hi, Endian.little); // high 32 bits second
       builder.add(bd.buffer.asUint8List());
     }
 

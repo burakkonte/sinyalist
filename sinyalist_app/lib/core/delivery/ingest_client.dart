@@ -279,7 +279,12 @@ class IngestClient {
         case 1: // 64-bit (fixed64)
           if (pos + 8 <= data.length) {
             final bd = ByteData.sublistView(data, pos, pos + 8);
-            final value = bd.getUint64(0, Endian.little);
+            // FIX: getUint64 is not supported by dart2js (web). Reconstruct
+            // the 64-bit value from two 32-bit reads.  Timestamps fit safely
+            // in 53 bits so no precision is lost on JS.
+            final lo = bd.getUint32(0, Endian.little);
+            final hi = bd.getUint32(4, Endian.little);
+            final value = (hi * 0x100000000) + lo; // hi<<32 | lo, JS-safe
             if (fieldNumber == 2) {
               result['timestamp_ms'] = value;
             }
