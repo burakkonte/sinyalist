@@ -12,10 +12,11 @@ use axum::{Router, extract::State, http::{StatusCode, HeaderMap, HeaderValue}, r
 use bytes::Bytes;
 use dashmap::DashMap;
 use prost::Message;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use std::{sync::Arc, time::Duration, net::SocketAddr, collections::HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
+use tokio::io::AsyncWriteExt;
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 use tracing::{info, warn, error, instrument};
@@ -122,6 +123,19 @@ const DEDUP_TTL: u64 = 300_000;
 // C2: Schema version enforcement
 const SCHEMA_VERSION: &str = "2.0";
 
+// Consensus: minimum unique devices in a geo cell within a time window
+// before a cluster is considered a real seismic event.
+// Below this threshold the packet is accepted but cluster is marked unconfirmed.
+const CONSENSUS_MIN_DEVICES: usize = 3;
+
+// Timestamp acceptance window: reject packets whose created_at_ms is more than
+// 5 minutes in the past or 60 seconds in the future (replay + clock-skew protection).
+const TIMESTAMP_PAST_WINDOW_MS: u64  = 5 * 60_000; // 5 minutes
+const TIMESTAMP_FUTURE_WINDOW_MS: u64 = 60_000;     // 60 seconds
+
+// Persist log file path (NDJSON — one JSON line per packet)
+const PERSIST_LOG_PATH: &str = "sinyalist_packets.ndjson";
+
 #[derive(Clone)]
 pub struct AppState {
     dedup: Arc<DashMap<Vec<u8>, u64>>,
@@ -140,7 +154,7 @@ pub struct Metrics {
     persisted: AtomicU64, backpressure: AtomicU64,
     verify_fail: AtomicU64, spam: AtomicU64, malformed: AtomicU64, oversized: AtomicU64,
     accepted_ok: AtomicU64, processed_ok: AtomicU64, queue_full: AtomicU64,
-    sig_missing: AtomicU64,
+    sig_missing: AtomicU64, timestamp_rejected: AtomicU64, consensus_pending: AtomicU64,
 }
 impl Metrics { fn new() -> Self { Self {
     ingested:AtomicU64::new(0), deduped:AtomicU64::new(0), afad:AtomicU64::new(0),
@@ -149,6 +163,7 @@ impl Metrics { fn new() -> Self { Self {
     malformed:AtomicU64::new(0), oversized:AtomicU64::new(0),
     accepted_ok:AtomicU64::new(0), processed_ok:AtomicU64::new(0),
     queue_full:AtomicU64::new(0), sig_missing:AtomicU64::new(0),
+    timestamp_rejected:AtomicU64::new(0), consensus_pending:AtomicU64::new(0),
 }}}
 
 fn verify_sig(p: &proto::SinyalistPacket) -> bool {
@@ -226,6 +241,25 @@ async fn ingest(State(s): State<AppState>, body: Bytes) -> impl IntoResponse {
     }
     s.known_keys.entry(p.ed25519_public_key.clone()).or_insert(now);
 
+    // Timestamp replay protection: reject packets that are too old or too far in the future.
+    // created_at_ms is set by the device at packet creation time.
+    // This prevents replaying old captured packets (e.g. old SMS intercepted).
+    // We use a 5-minute past window to tolerate SMS delay and BLE multi-hop latency.
+    if p.created_at_ms > 0 {
+        let age_ms = now.saturating_sub(p.created_at_ms);
+        let future_ms = p.created_at_ms.saturating_sub(now);
+        if age_ms > TIMESTAMP_PAST_WINDOW_MS {
+            s.m.timestamp_rejected.fetch_add(1, Ordering::Relaxed);
+            warn!(uid=p.user_id, age_ms=age_ms, "timestamp_too_old");
+            return (StatusCode::BAD_REQUEST, HeaderMap::new(), Bytes::new());
+        }
+        if future_ms > TIMESTAMP_FUTURE_WINDOW_MS {
+            s.m.timestamp_rejected.fetch_add(1, Ordering::Relaxed);
+            warn!(uid=p.user_id, future_ms=future_ms, "timestamp_too_future");
+            return (StatusCode::BAD_REQUEST, HeaderMap::new(), Bytes::new());
+        }
+    }
+
     // Dedup — use packet_id if available, else user_id+timestamp
     let dk = if !p.packet_id.is_empty() { p.packet_id.clone() }
              else { let mut k = p.user_id.to_le_bytes().to_vec(); k.extend(&p.timestamp_ms.to_le_bytes()); k };
@@ -256,19 +290,30 @@ async fn ingest(State(s): State<AppState>, body: Bytes) -> impl IntoResponse {
 
     // C3: Confidence scoring — only unique public keys increase confidence
     let tb = time_bucket(p.timestamp_ms);
-    let conf = {
+    let (conf, unique_devices) = {
         let mut c = s.clusters.entry((gk,tb)).or_insert_with(|| GeoCluster{keys:HashSet::new(),total:0,first_ms:now});
         c.total += 1;
         if p.ed25519_public_key.len() == 32 {
             let mut ka = [0u8;32]; ka.copy_from_slice(&p.ed25519_public_key); c.keys.insert(ka);
         }
-        c.confidence()
+        (c.confidence(), c.keys.len())
     };
 
-    // Priority routing — AFAD relay for critical packets
-    if p.is_trapped || p.msg_type == proto::MessageType::MsgTrapped as i32
+    // Consensus check: if fewer than CONSENSUS_MIN_DEVICES unique devices have reported
+    // in this geo cell + time bucket, the packet is still accepted (stored, ACKed) but
+    // NOT forwarded to AFAD. This prevents a single malfunctioning device from triggering
+    // an alert. The confidence score returned to the client reflects the real cluster state.
+    let consensus_reached = unique_devices >= CONSENSUS_MIN_DEVICES;
+    if !consensus_reached {
+        s.m.consensus_pending.fetch_add(1, Ordering::Relaxed);
+        info!(uid=p.user_id, unique_devices=unique_devices, needed=CONSENSUS_MIN_DEVICES,
+              "consensus_pending — packet accepted, AFAD relay withheld");
+    }
+
+    // Priority routing — AFAD relay only after consensus is reached
+    if consensus_reached && (p.is_trapped || p.msg_type == proto::MessageType::MsgTrapped as i32
        || p.msg_type == proto::MessageType::MsgMedical as i32
-       || p.alert_level >= proto::AlertLevel::AlertSevere as i32 {
+       || p.alert_level >= proto::AlertLevel::AlertSevere as i32) {
         s.m.afad.fetch_add(1, Ordering::Relaxed);
         let _ = s.afad_tx.try_send(p.clone());
     }
@@ -338,6 +383,10 @@ struct MResp {
     oversized: u64,
     queue_full: u64,
     backpressure: u64,
+    timestamp_rejected: u64,
+    // Consensus
+    consensus_pending: u64,
+    consensus_min_devices: usize,
     // Priority routing
     afad: u64,
     persisted: u64,
@@ -360,6 +409,9 @@ async fn metrics(State(s): State<AppState>) -> impl IntoResponse {
         oversized: s.m.oversized.load(Ordering::Relaxed),
         queue_full: s.m.queue_full.load(Ordering::Relaxed),
         backpressure: s.m.backpressure.load(Ordering::Relaxed),
+        timestamp_rejected: s.m.timestamp_rejected.load(Ordering::Relaxed),
+        consensus_pending: s.m.consensus_pending.load(Ordering::Relaxed),
+        consensus_min_devices: CONSENSUS_MIN_DEVICES,
         afad: s.m.afad.load(Ordering::Relaxed),
         persisted: s.m.persisted.load(Ordering::Relaxed),
         dedup_size: s.dedup.len(),
@@ -397,12 +449,63 @@ async fn persist_worker(mut rx: mpsc::Receiver<proto::SinyalistPacket>, m: Arc<M
     }
 }
 
+/// Packet record serialized to NDJSON for basic persistence.
+#[derive(Serialize, Deserialize)]
+struct PacketRecord {
+    user_id: u64,
+    lat_e7: i32,
+    lon_e7: i32,
+    timestamp_ms: u64,
+    created_at_ms: u64,
+    is_trapped: bool,
+    msg_type: i32,
+    alert_level: i32,
+    pubkey_hex: String,
+    packet_id_hex: String,
+}
+
 async fn flush(b: &mut Vec<proto::SinyalistPacket>, m: &Metrics) {
-    let n = b.len(); let t = b.iter().filter(|p|p.is_trapped).count();
+    let n = b.len();
+    let t = b.iter().filter(|p| p.is_trapped).count();
     info!(packets=n, trapped=t, "batch_flush");
+
+    // Append NDJSON records to persist log — survives server restarts.
+    // This is not a full database but prevents total data loss on crash.
+    match tokio::fs::OpenOptions::new()
+        .create(true).append(true)
+        .open(PERSIST_LOG_PATH).await
+    {
+        Ok(mut f) => {
+            for p in b.iter() {
+                let rec = PacketRecord {
+                    user_id: p.user_id,
+                    lat_e7: p.latitude_e7,
+                    lon_e7: p.longitude_e7,
+                    timestamp_ms: p.timestamp_ms,
+                    created_at_ms: p.created_at_ms,
+                    is_trapped: p.is_trapped,
+                    msg_type: p.msg_type,
+                    alert_level: p.alert_level,
+                    pubkey_hex: hex_encode(&p.ed25519_public_key),
+                    packet_id_hex: hex_encode(&p.packet_id),
+                };
+                if let Ok(line) = serde_json::to_string(&rec) {
+                    let _ = f.write_all(format!("{}\n", line).as_bytes()).await;
+                }
+            }
+        }
+        Err(e) => {
+            error!("persist_log_open_failed: {}", e);
+        }
+    }
+
     m.persisted.fetch_add(n as u64, Ordering::Relaxed);
     m.processed_ok.fetch_add(n as u64, Ordering::Relaxed);
     b.clear();
+}
+
+fn hex_encode(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{:02x}", x)).collect()
 }
 
 async fn afad_worker(mut rx: mpsc::Receiver<proto::SinyalistPacket>) {
@@ -601,5 +704,48 @@ mod tests {
     fn test_verify_sig_rejects_empty() {
         let p = proto::SinyalistPacket::default();
         assert!(!verify_sig(&p));
+    }
+
+    #[test]
+    fn test_timestamp_validation_window() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+
+        // Within window — should pass
+        let age_ok = now - 60_000; // 1 minute ago
+        let future_ok = now + 30_000; // 30 seconds in future
+        // Outside window
+        let too_old = now - (TIMESTAMP_PAST_WINDOW_MS + 1_000); // 6 min ago
+        let too_future = now + (TIMESTAMP_FUTURE_WINDOW_MS + 1_000); // 61 sec in future
+
+        let check = |ts: u64| -> bool {
+            let age = now.saturating_sub(ts);
+            let future = ts.saturating_sub(now);
+            age <= TIMESTAMP_PAST_WINDOW_MS && future <= TIMESTAMP_FUTURE_WINDOW_MS
+        };
+
+        assert!(check(age_ok),    "1-min-old packet should pass window");
+        assert!(check(future_ok), "30-sec-future packet should pass window");
+        assert!(!check(too_old),  "6-min-old packet should be rejected");
+        assert!(!check(too_future), "61-sec-future packet should be rejected");
+    }
+
+    #[test]
+    fn test_consensus_threshold() {
+        let mut c = GeoCluster::default();
+        // Below threshold
+        c.keys.insert([1u8; 32]);
+        c.keys.insert([2u8; 32]);
+        assert!(c.keys.len() < CONSENSUS_MIN_DEVICES, "2 devices should be below consensus threshold");
+        // At threshold
+        c.keys.insert([3u8; 32]);
+        assert!(c.keys.len() >= CONSENSUS_MIN_DEVICES, "3 devices should reach consensus threshold");
+    }
+
+    #[test]
+    fn test_hex_encode() {
+        assert_eq!(hex_encode(&[0xDE, 0xAD, 0xBE, 0xEF]), "deadbeef");
+        assert_eq!(hex_encode(&[]), "");
     }
 }

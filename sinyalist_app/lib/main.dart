@@ -14,6 +14,7 @@ import 'package:sinyalist/core/bridge/native_bridge.dart';
 import 'package:sinyalist/core/connectivity/connectivity_manager.dart';
 import 'package:sinyalist/core/crypto/keypair_manager.dart';
 import 'package:sinyalist/core/delivery/delivery_state_machine.dart';
+import 'package:sinyalist/core/location/location_manager.dart';
 import 'package:sinyalist/screens/home_screen.dart';
 
 void main() {
@@ -38,6 +39,7 @@ class SinyalistApp extends StatefulWidget {
 class _SinyalistAppState extends State<SinyalistApp> with WidgetsBindingObserver {
   final ConnectivityManager _connectivity = ConnectivityManager();
   final KeypairManager _keypairManager = KeypairManager();
+  final LocationManager _locationManager = LocationManager();
   late final DeliveryStateMachine _deliveryFsm;
   bool _isEmergency = false;
   bool _isInitialized = false;
@@ -88,6 +90,15 @@ class _SinyalistAppState extends State<SinyalistApp> with WidgetsBindingObserver
       debugPrint('[Main] Connectivity init skipped: $e');
     }
 
+    // Step 4: Initialize GPS location
+    try {
+      setState(() => _initStatus = 'Acquiring location...');
+      await _locationManager.initialize();
+      debugPrint('[Main] Location manager ready — hasReal=${_locationManager.hasRealLocation}');
+    } catch (e) {
+      debugPrint('[Main] Location init skipped: $e');
+    }
+
     setState(() {
       _isInitialized = true;
       _initStatus = 'Ready';
@@ -121,6 +132,7 @@ class _SinyalistAppState extends State<SinyalistApp> with WidgetsBindingObserver
     WidgetsBinding.instance.removeObserver(this);
     _seismicSub?.cancel();
     _connectivity.dispose();
+    _locationManager.dispose();
     super.dispose();
   }
 
@@ -155,6 +167,7 @@ class _SinyalistAppState extends State<SinyalistApp> with WidgetsBindingObserver
               connectivity: _connectivity,
               deliveryFsm: _deliveryFsm,
               keypairManager: _keypairManager,
+              locationManager: _locationManager,
               isEmergency: _isEmergency,
               onEmergencyToggle: _toggleEmergency,
             )

@@ -11,11 +11,13 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.sinyalist.core.SeismicEngine
@@ -95,6 +97,13 @@ class SinyalistForegroundService : Service() {
     // -----------------------------------------------------------------------
 
     private fun startMonitoring() {
+        // Request battery optimization exemption so the OS does not kill the
+        // service during deep sleep (Doze mode).  This opens the system dialog
+        // asking the user to allow unrestricted background activity for Sinyalist.
+        // Required for reliable background seismic monitoring on Xiaomi, Samsung,
+        // Oppo and other OEMs that aggressively kill background processes.
+        requestBatteryOptimizationExemption()
+
         // Acquire partial wake lock
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         // FIX: acquire for 1 hour instead of 24 hours.  The watchdog (every 30s)
@@ -151,6 +160,29 @@ class SinyalistForegroundService : Service() {
 
         Log.i(TAG, "Monitoring STARTED — seismic + mesh active")
         logState("monitoring_started", "All subsystems active, watchdog running")
+    }
+
+    private fun requestBatteryOptimizationExemption() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            val pkg = packageName
+            if (!pm.isIgnoringBatteryOptimizations(pkg)) {
+                // Open the system "Battery optimization" dialog for this app.
+                // This is an explicit user-facing action — cannot be granted silently.
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$pkg")
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(intent)
+                logState("battery_opt_dialog", "Requested battery optimization exemption")
+            } else {
+                logState("battery_opt_ok", "Already exempt from battery optimizations")
+            }
+        } catch (e: Exception) {
+            // Some OEMs restrict this intent; log and continue
+            Log.w(TAG, "Battery optimization exemption request failed: $e")
+            logState("battery_opt_failed", e.message ?: "unknown")
+        }
     }
 
     private fun stopMonitoring() {

@@ -13,11 +13,13 @@ import 'package:sinyalist/core/bridge/native_bridge.dart';
 import 'package:sinyalist/core/connectivity/connectivity_manager.dart';
 import 'package:sinyalist/core/crypto/keypair_manager.dart';
 import 'package:sinyalist/core/delivery/delivery_state_machine.dart';
+import 'package:sinyalist/core/location/location_manager.dart';
 
 class HomeScreen extends StatefulWidget {
   final ConnectivityManager connectivity;
   final DeliveryStateMachine deliveryFsm;
   final KeypairManager keypairManager;
+  final LocationManager locationManager;
   final bool isEmergency;
   final VoidCallback onEmergencyToggle;
 
@@ -26,6 +28,7 @@ class HomeScreen extends StatefulWidget {
     required this.connectivity,
     required this.deliveryFsm,
     required this.keypairManager,
+    required this.locationManager,
     required this.isEmergency,
     required this.onEmergencyToggle,
   });
@@ -435,17 +438,23 @@ class _HomeScreenState extends State<HomeScreen> {
       writeVarint(zigzag & 0xFFFFFFFF);
     }
 
+    // Get real GPS location (or fallback if unavailable)
+    final loc = widget.locationManager.getOrFallback();
+    if (!loc.isReal) {
+      debugPrint('[HomeScreen] WARNING: using Istanbul fallback coords — GPS unavailable');
+    }
+
     // field 1: user_id (fixed64) — use device hash
     writeFixed64(1, now ~/ 1000); // Use seconds as pseudo user_id
 
-    // field 3: latitude_e7 (sint32) — Istanbul default ~41.01N
-    writeSint32Field(3, 410100000);
+    // field 3: latitude_e7 (sint32) — real GPS or fallback
+    writeSint32Field(3, loc.latitudeE7);
 
-    // field 4: longitude_e7 (sint32) — Istanbul default ~28.97E
-    writeSint32Field(4, 289700000);
+    // field 4: longitude_e7 (sint32) — real GPS or fallback
+    writeSint32Field(4, loc.longitudeE7);
 
-    // field 6: accuracy_cm (uint32)
-    writeVarintField(6, 1500); // 15 meters
+    // field 6: accuracy_cm (uint32) — from GPS fix or 999999 for fallback
+    writeVarintField(6, loc.accuracyCm);
 
     // field 13: battery_percent
     writeVarintField(13, 50); // placeholder

@@ -1,11 +1,18 @@
 // =============================================================================
-// SINYALIST — Seismic P-Wave Detection Engine v2.0 (NDK / C++17)
+// SINYALIST — Seismic P-Wave Detection Engine v2.1 (NDK / C++17)
 // =============================================================================
 // v2 UPGRADES:
 //   A1) Dynamic calibration via rolling-window variance baseline
 //   A2) Periodicity rejection (walking/elevator/vehicle patterns)
 //   A3) Debug telemetry exposed via JNI for Flutter debug screen
-//   A2) Energy distribution check (single-axis event rejection)
+//   A4) Energy distribution check (single-axis event rejection)
+// v2.1 UPGRADES:
+//   B1) Band-pass IIR filter (1–15 Hz) applied BEFORE STA/LTA — removes DC,
+//       infra-sound (<1 Hz) and high-frequency noise (>15 Hz).  Uses 2-pole
+//       Butterworth approximation via cascaded biquad sections.
+//   B2) Device orientation normalization — subtracts low-pass gravity vector
+//       so the detector responds to body acceleration only, regardless of
+//       whether the phone is flat, vertical, or tilted.
 // =============================================================================
 
 #pragma once
@@ -61,6 +68,70 @@ struct HighPassState {
     void reset() noexcept { prev_raw = prev_filt = 0; }
 };
 
+// ---------------------------------------------------------------------------
+// B1: Biquad IIR section — one second-order section of a cascaded filter.
+// Implements the Direct Form II Transposed structure (numerically stable).
+// Coefficients (b0,b1,b2,a1,a2) are pre-computed for 50 Hz sample rate.
+// ---------------------------------------------------------------------------
+struct Biquad {
+    float b0=1, b1=0, b2=0, a1=0, a2=0;
+    float w1=0, w2=0;
+    float process(float x) noexcept {
+        float y = b0*x + w1;
+        w1 = b1*x - a1*y + w2;
+        w2 = b2*x - a2*y;
+        return y;
+    }
+    void reset() noexcept { w1 = w2 = 0; }
+};
+
+// B1: Cascaded 2-pole Butterworth band-pass filter: 1–15 Hz @ 50 Hz Fs.
+// Implemented as two biquad sections (4th order total):
+//   Section 1 = high-pass at 1 Hz
+//   Section 2 = low-pass at 15 Hz
+// Coefficients computed analytically for Fs=50, Fc=1 Hz (HP) and Fc=15 Hz (LP).
+// HP 1 Hz @50 Hz: alpha = 2*pi*1/50 = 0.1257
+//   a = (1-sin)/(1+sin) style bilinear, simplified 2-pole HP.
+// LP 15 Hz @50 Hz: bilinear transform 2-pole Butterworth.
+struct BandPassFilter {
+    // High-pass section: 1 Hz cutoff, 50 Hz Fs (2-pole Butterworth)
+    // Pre-warped: wc = 2*tan(pi*1/50) = 0.12664
+    // b = [1, -2, 1] * k^2/(1+sqrt(2)*k+k^2) where k = wc/2
+    // Computed offline: b0=0.9429f, b1=-1.8858f, b2=0.9429f
+    //                   a1=-1.8805f, a2=0.8853f
+    Biquad hp { 0.9429f, -1.8858f, 0.9429f, -1.8805f, 0.8853f };
+
+    // Low-pass section: 15 Hz cutoff, 50 Hz Fs (2-pole Butterworth)
+    // Pre-warped: wc = 2*tan(pi*15/50) = 2.0f
+    // Computed offline: b0=0.2929f, b1=0.5858f, b2=0.2929f
+    //                   a1=0.0f,    a2=0.1716f
+    Biquad lp { 0.2929f, 0.5858f, 0.2929f, 0.0f, 0.1716f };
+
+    float process(float x) noexcept { return lp.process(hp.process(x)); }
+    void reset() noexcept { hp.reset(); lp.reset(); }
+};
+
+// ---------------------------------------------------------------------------
+// B2: Gravity vector estimator — slow low-pass (0.1 Hz) tracks the static
+// gravity component for each axis.  Subtracting this from the raw reading
+// gives body acceleration regardless of device orientation / tilt.
+// alpha = 1 - exp(-2*pi*0.1/50) ≈ 0.01245
+// ---------------------------------------------------------------------------
+struct GravityEstimator {
+    static constexpr float kAlpha = 0.01245f;   // ~0.1 Hz low-pass @ 50 Hz
+    float gx = 0, gy = 0, gz = -1.0f;           // initial guess: phone face-up
+    void update(float ax, float ay, float az) noexcept {
+        gx += kAlpha * (ax - gx);
+        gy += kAlpha * (ay - gy);
+        gz += kAlpha * (az - gz);
+    }
+    // Linear acceleration = raw - gravity
+    float linX(float ax) const noexcept { return ax - gx; }
+    float linY(float ay) const noexcept { return ay - gy; }
+    float linZ(float az) const noexcept { return az - gz; }
+    void reset() noexcept { gx = gy = 0; gz = -1.0f; }
+};
+
 template<typename T, uint32_t MAX_N>
 class Ring {
     std::array<T, MAX_N> b_{}; uint32_t h_=0, n_=0, cap_=MAX_N;
@@ -94,9 +165,23 @@ public:
         ++total_;
         if(cd_>0){--cd_;return;}
 
-        float ax=hx_.process(ax_r,cfg_.hp_alpha);
-        float ay=hy_.process(ay_r,cfg_.hp_alpha);
-        float az=hz_.process(az_r,cfg_.hp_alpha);
+        // B2: subtract gravity to get linear (body) acceleration
+        grav_.update(ax_r, ay_r, az_r);
+        float lx = grav_.linX(ax_r);
+        float ly = grav_.linY(ay_r);
+        float lz = grav_.linZ(az_r);
+
+        // B1: band-pass 1–15 Hz per axis (removes DC drift and HF noise)
+        float ax = bpx_.process(lx);
+        float ay = bpy_.process(ly);
+        float az = bpz_.process(lz);
+
+        // Legacy high-pass still applied as a second stage for extra DC rejection
+        // (hp_alpha=0.98 → ~0.16 Hz cutoff, well below band-pass lower edge)
+        ax = hx_.process(ax, cfg_.hp_alpha);
+        ay = hy_.process(ay, cfg_.hp_alpha);
+        az = hz_.process(az, cfg_.hp_alpha);
+
         float mag=std::sqrt(ax*ax+ay*ay+az*az);
 
         sta_.push(mag); lta_.push(mag); cal_.push(mag); per_.push(mag);
@@ -145,6 +230,8 @@ public:
 
     void reset() noexcept {
         hx_.reset();hy_.reset();hz_.reset();
+        bpx_.reset();bpy_.reset();bpz_.reset();
+        grav_.reset();
         sta_.reset();lta_.reset();cal_.reset();per_.reset();
         reset_st(); total_=0;
     }
@@ -153,6 +240,8 @@ private:
     enum class S:uint8_t{IDLE,CONFIRM,TRIGGERED};
     Config cfg_;
     HighPassState hx_,hy_,hz_;
+    BandPassFilter bpx_,bpy_,bpz_;   // B1: 1–15 Hz band-pass per axis
+    GravityEstimator grav_;            // B2: orientation-independent linear accel
     Ring<float,100> sta_; Ring<float,1000> lta_;
     Ring<float,5000> cal_; Ring<float,200> per_;
     S st_=S::IDLE; uint32_t sc_=0,dur_=0,cd_=0,zc_=0;
