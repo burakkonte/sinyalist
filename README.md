@@ -1,0 +1,202 @@
+# Sinyalist
+
+**Community earthquake early-warning and survivor-location prototype for Istanbul.**
+
+> **SAFETY DISCLAIMER** — Sinyalist is a **research/community prototype**, not a certified early-warning system. It provides no guarantee of detection, delivery, or response time. Do **not** rely on it as a primary safety mechanism for life-safety decisions. Use at your own risk. The authors accept no liability for missed events, false alarms, or delivery failures — especially during infrastructure-collapse scenarios where the system is most needed.
+
+---
+
+Sinyalist detects seismic events on-device using raw accelerometer data, then delivers signed location reports through a resilient multi-transport cascade: internet first, falling back to SMS, then BLE mesh. The system is designed to function during and after infrastructure collapse, when cell towers are down and internet connectivity is unavailable.
+
+## Architecture
+
+```
+ Android Device                          Cloud
+ ┌─────────────────────────────┐      ┌──────────────────┐
+ │  C++ Seismic Engine (NDK)   │      │  Rust Ingest API │
+ │  ↓ 50 Hz accelerometer      │      │  - Ed25519 verify│
+ │  ↓ STA/LTA + 4-stage reject │      │  - Dedup (LRU)   │
+ │  Kotlin BLE Mesh Controller │  →→  │  - Rate limiting │
+ │  - Priority queue           │ HTTP │  - Geo-cluster   │
+ │  - SQLite persistence       │      │    confidence    │
+ │  - Store-carry-forward      │      │  - Honest ACK    │
+ │  Flutter UI + Delivery FSM  │      └──────────────────┘
+ │  - Ed25519 signing          │
+ │  - Internet → SMS → BLE     │
+ └─────────────────────────────┘
+```
+
+## Components
+
+| Directory | Language | Purpose |
+|-----------|----------|---------|
+| `sinyalist_app/lib/` | Dart/Flutter | UI, delivery state machine, SMS codec, Ed25519 keypair, connectivity cascade |
+| `sinyalist_app/android/.../kotlin/` | Kotlin | BLE mesh controller, seismic engine bridge, foreground service, boot receiver |
+| `sinyalist_app/android/.../cpp/` | C++17 | Seismic detector: adaptive STA/LTA with walk/elevator/drop rejection |
+| `backend/` | Rust | Axum HTTP ingest server: signature verification, dedup, rate limiting, confidence scoring |
+| `proto/` | Protobuf | `SinyalistPacket` (32 fields), `PacketAck`, `MeshRelay` message definitions |
+| `tools/loadtest/` | Rust | Load test tool: generates signed packets at configurable rate |
+
+## Tested With
+
+| Tool | Minimum | Tested |
+|------|---------|--------|
+| Rust / cargo | 1.75 | 1.77 |
+| Flutter | 3.19 | 3.22 |
+| Android NDK | r25 | r26b |
+| CMake | 3.22 | 3.22 |
+| Android Gradle Plugin | 8.1 | 8.3 |
+| Android API | 24 | 34 |
+
+## Prerequisites
+
+- **Flutter** >= 3.19 (stable channel)
+- **Rust** >= 1.75 (with cargo)
+- **Android SDK** (API 24+) with NDK r25+ and CMake 3.22+
+- **PowerShell** or any terminal
+
+## Quick Start
+
+### Backend
+
+```powershell
+cd backend
+cargo build --release
+$env:RUST_LOG = "info"
+cargo run --release
+# Server listens on http://localhost:8080
+# Endpoints: POST /v1/ingest, GET /health, GET /ready, GET /metrics
+```
+
+### Flutter App (Android)
+
+```powershell
+cd sinyalist_app
+flutter pub get
+flutter run             # Debug on connected device
+flutter build apk       # Release APK
+```
+
+### Flutter App (Web — limited)
+
+```powershell
+cd sinyalist_app
+flutter run -d chrome   # Seismic engine and BLE mesh are Android-only
+```
+
+### Load Test Tool
+
+```powershell
+cd tools\loadtest
+cargo run --release -- --url http://localhost:8080 --rate 100 --duration 30
+```
+
+### Run Tests
+
+```powershell
+# Backend (Rust)
+cd backend
+cargo test -- --nocapture
+
+# Flutter (Dart — SMS codec, CRC32)
+cd sinyalist_app
+flutter test
+```
+
+## Connectivity Cascade
+
+The delivery state machine follows a deterministic fallback order:
+
+1. **Internet** — HTTP POST to `/v1/ingest` with protobuf body. Exponential backoff (500 ms, 1 s, 2 s, 4 s, 8 s cap). Server returns `PacketAck` with confidence score.
+2. **SMS** — Used only after internet fails **and** cellular signal is confirmed present. Compact binary payload: `SY1|<base64(38 bytes)>|<CRC32_hex>`. Fits in a single 160-char SMS. **SMS delivery is not guaranteed** — carrier infrastructure may fail during major seismic events (tower damage, congestion). No delivery confirmation is available. SMS is a best-effort last resort before BLE mesh.
+3. **BLE Mesh** — Packets are broadcast via Bluetooth LE advertising and received by peers scanning in the background (connectionless flooding). For store-carry-forward relay, devices that come into contact exchange buffered packets over a GATT connection. Priority queue (TRAPPED > MEDICAL > SOS > STATUS > CHAT). SQLite persistence survives app restarts.
+
+Every packet is Ed25519-signed before leaving the device. Unsigned packets never enter the outbox.
+
+## ACK Semantics
+
+HTTP 200 with a `PacketAck` means the packet was **accepted into the ingest buffer**. It does **not** mean the packet has been persisted to disk or relayed to AFAD — those are asynchronous. If the persistence or relay channel overflows, the `backpressure` metric increments and that copy may be dropped. HTTP 503 with `Retry-After` is returned only when the primary ingest buffer itself is full.
+
+Rejection codes:
+- **HTTP 400** — malformed or oversized packet
+- **HTTP 403** — Ed25519 signature missing, public key absent, or signature verification failed
+- **HTTP 429** — rate limit exceeded (30/min per public key, or 500/min per ~1 km geohash cell)
+- **HTTP 503** — primary ingest buffer full; retry after the indicated delay
+
+## Security Model
+
+- **Ed25519 signatures**: Per-install keypair generated on first launch. Every packet signed before transmission. Signing payload is the packet serialized to bytes with `ed25519_signature` (field 28) cleared/omitted; all other fields including the public key are included. Server verifies strictly; rejects unsigned or tampered packets (HTTP 403).
+- **Rate limiting**: Client-side (5 sends / 30 seconds) and server-side (30/min per public key, 500/min per geohash bucket).
+- **Dedup**: Server maintains LRU dedup map (5-minute TTL) keyed by `packet_id`. Duplicates return 200 but do not inflate confidence scores.
+- **Confidence scoring**: Geo-cluster correlation within time windows. Confidence increases only with unique independently signed reports from distinct public keys.
+
+## Limitations
+
+| Limitation | Severity | Notes |
+|------------|----------|-------|
+| iOS background BLE | Critical | iOS cannot reliably advertise/scan BLE when backgrounded. Android ForegroundService is the only supported always-on mode. **Do not promise always-on BLE on iOS.** |
+| GPS not integrated | High | If GPS permission is denied or unavailable, location fields are left as null/unset — **no default city coordinates are substituted in production builds**. Demo builds that hardcode coordinates must be clearly labelled as demo-only. |
+| SMS bridge not wired | Medium | SMS codec is complete and tested. Native `SmsManager` platform channel is TODO. SMS delivery is best-effort and unconfirmed. |
+| Single backend instance | Medium | In-memory queue and dedup. Production needs PostgreSQL + Redis + load balancer. |
+| Ed25519 key storage | Medium | Stored in SharedPreferences (base64), not Android Keystore. Acceptable for v2. |
+
+## Project Structure
+
+```
+sinyalist/
+├── README.md
+├── .gitignore
+├── proto/
+│   └── sinyalist_packet.proto
+├── backend/
+│   ├── Cargo.toml
+│   ├── Cargo.lock
+│   ├── build.rs
+│   └── src/main.rs
+├── sinyalist_app/
+│   ├── pubspec.yaml
+│   ├── lib/
+│   │   ├── main.dart
+│   │   ├── core/
+│   │   │   ├── bridge/native_bridge.dart
+│   │   │   ├── codec/sms_codec.dart
+│   │   │   ├── connectivity/connectivity_manager.dart
+│   │   │   ├── crypto/keypair_manager.dart
+│   │   │   ├── delivery/
+│   │   │   │   ├── delivery_state_machine.dart
+│   │   │   │   └── ingest_client.dart
+│   │   │   └── theme/sinyalist_theme.dart
+│   │   └── screens/home_screen.dart
+│   ├── test/
+│   │   ├── sms_codec_test.dart
+│   │   └── widget_test.dart
+│   └── android/
+│       └── app/src/main/
+│           ├── kotlin/com/sinyalist/
+│           │   ├── MainActivity.kt
+│           │   ├── SinyalistApplication.kt
+│           │   ├── core/SeismicEngine.kt
+│           │   ├── mesh/
+│           │   │   ├── NodusMeshController.kt
+│           │   │   └── MeshPacketStore.kt
+│           │   └── service/
+│           │       ├── SinyalistForegroundService.kt
+│           │       └── BootReceiver.kt
+│           └── cpp/
+│               ├── CMakeLists.txt
+│               ├── seismic_detector.hpp
+│               └── seismic_jni_bridge.cpp
+├── tools/
+│   └── loadtest/
+│       ├── Cargo.toml
+│       └── src/main.rs
+└── docs/
+    ├── ARCHITECTURE.md
+    ├── TESTING.md
+    └── archive/
+        └── UPGRADE_REPORT_v2.md
+```
+
+## License
+
+This project is not yet under a formal open-source license. All rights reserved by the author. Contact the maintainer before distributing or modifying.
