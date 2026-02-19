@@ -43,7 +43,7 @@ class LocationSnapshot {
       'acc=${accuracyCm}cm, real=$isReal)';
 }
 
-class LocationManager {
+class LocationManager with ChangeNotifier {
   static const _tag = 'LocationManager';
 
   LocationSnapshot? _last;
@@ -113,6 +113,7 @@ class LocationManager {
       updatedAt: DateTime.now(),
     );
     debugPrint('[$_tag] Updated: $_last');
+    notifyListeners();
   }
 
   /// Returns current location, or Istanbul fallback if unavailable.
@@ -131,8 +132,10 @@ class LocationManager {
   /// True if the user denied location permission.
   bool get isPermissionDenied => _permissionDenied;
 
+  @override
   void dispose() {
     _sub?.cancel();
     _sub = null;
+    super.dispose();
   }
 }

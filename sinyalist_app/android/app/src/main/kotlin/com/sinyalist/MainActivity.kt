@@ -6,6 +6,7 @@
 //   - Seismic Engine (C++ NDK via JNI)
 //   - Nodus BLE Mesh
 //   - Foreground Service control
+//   - SMS transport (SmsManager)
 // =============================================================================
 
 package com.sinyalist
@@ -18,17 +19,20 @@ import io.flutter.plugin.common.MethodChannel
 import com.sinyalist.core.SeismicEngine
 import com.sinyalist.mesh.NodusMeshController
 import com.sinyalist.service.SinyalistForegroundService
+import com.sinyalist.sms.SmsBridge
 
 class MainActivity : FlutterActivity() {
 
     private lateinit var seismicEngine: SeismicEngine
     private lateinit var meshController: NodusMeshController
+    private lateinit var smsBridge: SmsBridge
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
         seismicEngine = SeismicEngine(this)
         meshController = NodusMeshController(this)
+        smsBridge = SmsBridge(this)
 
         val messenger = flutterEngine.dartExecutor.binaryMessenger
 
@@ -100,11 +104,29 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        // --- SMS MethodChannel ---
+        MethodChannel(messenger, "com.sinyalist/sms").setMethodCallHandler { call, result ->
+            smsBridge.handleMethodCall(call, result)
+        }
+
+        // --- SMS EventChannel (sent/delivery receipts) ---
+        EventChannel(messenger, "com.sinyalist/sms_events").setStreamHandler(
+            object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    smsBridge.eventSink = events
+                }
+                override fun onCancel(arguments: Any?) {
+                    smsBridge.eventSink = null
+                }
+            }
+        )
     }
 
     override fun onDestroy() {
         seismicEngine.destroy()
         meshController.stopMesh()
+        smsBridge.unregister()
         super.onDestroy()
     }
 }

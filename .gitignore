@@ -13,3 +13,4 @@ sinyalist_app/android/gradlew.bat
 backend/target/
 tools/loadtest/target/
 tools/loadtest/Cargo.lock
+backend/sinyalist_packets.ndjson

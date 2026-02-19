@@ -13,6 +13,8 @@ import 'package:flutter/foundation.dart';
 import 'package:sinyalist/core/delivery/ingest_client.dart';
 import 'package:sinyalist/core/crypto/keypair_manager.dart';
 import 'package:sinyalist/core/bridge/native_bridge.dart';
+import 'package:sinyalist/core/codec/sms_codec.dart';
+import 'package:sinyalist/core/sms/sms_bridge.dart';
 
 /// Delivery lifecycle states.
 enum DeliveryState {
@@ -97,12 +99,17 @@ class DeliveryConfig {
   final bool bleEnabled;
   final Duration rateLimitWindow;
   final int maxSendsPerWindow;
+  /// E.164 formatted SMS relay number (e.g. "+905001234567").
+  /// Used when internet and BLE are unavailable.
+  /// Set to empty string to disable SMS even when smsEnabled=true.
+  final String smsRelayNumber;
 
   const DeliveryConfig({
-    this.smsEnabled = false,   // SMS requires explicit opt-in
+    this.smsEnabled = true,
     this.bleEnabled = true,
     this.rateLimitWindow = const Duration(seconds: 30),
     this.maxSendsPerWindow = 5,
+    this.smsRelayNumber = '',  // Must be configured in production
   });
 }
 
@@ -227,14 +234,48 @@ class DeliveryStateMachine extends ChangeNotifier {
       debugPrint('[$_tag] Internet not available, skipping');
     }
 
-    // Step 3: Try SMS (if enabled)
-    if (config.smsEnabled) {
+    // Step 3: Try SMS (if enabled and relay number is configured)
+    if (config.smsEnabled &&
+        config.smsRelayNumber.isNotEmpty &&
+        !kIsWeb &&
+        defaultTargetPlatform == TargetPlatform.android) {
       _transition(DeliveryState.sendingSms, packetIdHex);
-      // SMS sending is platform-specific and requires native bridge
-      // For now, we log the attempt and fall through
-      debugPrint('[$_tag] SMS transport: would send ${signedPacket.length} bytes');
-      // TODO: integrate with platform SMS sender when available
-      debugPrint('[$_tag] SMS not yet integrated with native sender');
+      try {
+        // Build compact SMS payload from the signed packet.
+        // We extract fields from the raw (pre-sign) packet bytes and encode
+        // them into the compact SY1 format that fits in 160 chars.
+        final smsPayload = _buildSmsPayload(rawPacketWithoutSig);
+        if (smsPayload != null) {
+          final smsMessages = SmsCodec.encode(smsPayload);
+          debugPrint('[$_tag] SMS: encoding into ${smsMessages.length} part(s) '
+              '→ ${smsMessages.map((m) => m.length).toList()} chars');
+
+          final smsResult = await SmsBridge.send(
+            address: config.smsRelayNumber,
+            messages: smsMessages,
+          );
+
+          if (smsResult.isSuccess) {
+            debugPrint('[$_tag] Delivered via SMS (${smsMessages.length} part(s), '
+                'msgId=${smsResult.msgId})');
+            _updateRecord(packetIdHex, DeliveryState.delivered,
+                transport: 'sms');
+            return DeliveryResult(
+              finalState: DeliveryState.delivered,
+              transport: 'sms',
+              elapsed: stopwatch.elapsed,
+            );
+          } else {
+            debugPrint('[$_tag] SMS delivery failed: ${smsResult.error}');
+          }
+        } else {
+          debugPrint('[$_tag] SMS payload extraction failed — skipping SMS');
+        }
+      } catch (e) {
+        debugPrint('[$_tag] SMS transport error: $e');
+      }
+    } else if (config.smsEnabled && config.smsRelayNumber.isEmpty) {
+      debugPrint('[$_tag] SMS skipped — no relay number configured');
     }
 
     // Step 4: Try BLE mesh (Android only — plugin not available on web)
@@ -266,6 +307,129 @@ class DeliveryStateMachine extends ChangeNotifier {
       error: 'All transports exhausted',
       elapsed: stopwatch.elapsed,
     );
+  }
+
+  /// Extract key fields from a raw protobuf SinyalistPacket and build an
+  /// [SmsPayload] for compact SMS encoding.
+  ///
+  /// The raw packet is NOT fully parsed here — we do a best-effort linear scan
+  /// for the fields we need (lat/lon/accuracy/timestamp/trapped/msg_type/packet_id).
+  /// Unknown fields are ignored. Returns null if extraction fails.
+  SmsPayload? _buildSmsPayload(Uint8List rawPacket) {
+    try {
+      int latE7 = 0;
+      int lonE7 = 0;
+      int accuracyCm = 0;
+      int trappedStatus = 0;
+      int createdAtMs = 0;
+      int msgType = 0;
+      Uint8List packetId = Uint8List(16);
+
+      int pos = 0;
+
+      int readVarint() {
+        int result = 0;
+        int shift = 0;
+        while (pos < rawPacket.length) {
+          final byte = rawPacket[pos++];
+          result |= (byte & 0x7F) << shift;
+          if ((byte & 0x80) == 0) break;
+          shift += 7;
+        }
+        return result;
+      }
+
+      int readZigzag() {
+        final n = readVarint();
+        return (n >> 1) ^ -(n & 1);
+      }
+
+      // Read little-endian uint64 (two uint32s)
+      int readFixed64() {
+        if (pos + 8 > rawPacket.length) { pos += 8; return 0; }
+        final bd = ByteData.sublistView(rawPacket, pos, pos + 8);
+        final lo = bd.getUint32(0, Endian.little);
+        final hi = bd.getUint32(4, Endian.little);
+        pos += 8;
+        return (hi << 32) | lo;
+      }
+
+      while (pos < rawPacket.length) {
+        final tag = readVarint();
+        final fieldNumber = tag >> 3;
+        final wireType = tag & 0x7;
+
+        switch (wireType) {
+          case 0: // varint
+            final val = readVarint();
+            switch (fieldNumber) {
+              case 6: accuracyCm = val; break;
+              case 13: break; // battery — ignore
+              case 21: trappedStatus = val > 0 ? 1 : 0; break;
+              case 26: msgType = val; break;
+              case 27: break; // priority — ignore
+            }
+          case 1: // fixed64
+            final val = readFixed64();
+            switch (fieldNumber) {
+              case 16: break; // timestamp_ms — prefer created_at_ms
+              case 25: createdAtMs = val; break;
+            }
+          case 2: // length-delimited
+            final len = readVarint();
+            if (fieldNumber == 24 && len >= 16) { // packet_id
+              packetId = rawPacket.sublist(pos, pos + 16);
+              pos += len;
+            } else {
+              pos += len;
+            }
+          default:
+            // Unknown wire type — stop parsing to avoid corruption
+            pos = rawPacket.length;
+        }
+      }
+
+      // Re-scan for sint32 lat/lon (wire type 0 with zigzag)
+      pos = 0;
+      while (pos < rawPacket.length) {
+        final tag = readVarint();
+        final fieldNumber = tag >> 3;
+        final wireType = tag & 0x7;
+        if (wireType == 0) {
+          if (fieldNumber == 3) {
+            latE7 = readZigzag();
+          } else if (fieldNumber == 4) {
+            lonE7 = readZigzag();
+          } else {
+            readVarint(); // consume and discard
+          }
+        } else if (wireType == 1) {
+          pos += 8;
+        } else if (wireType == 2) {
+          final len = readVarint();
+          pos += len;
+        } else {
+          break;
+        }
+      }
+
+      if (createdAtMs == 0) {
+        createdAtMs = DateTime.now().millisecondsSinceEpoch;
+      }
+
+      return SmsPayload(
+        packetId: packetId,
+        latitudeE7: latE7,
+        longitudeE7: lonE7,
+        accuracyCm: accuracyCm,
+        trappedStatus: trappedStatus,
+        createdAtMs: createdAtMs,
+        msgType: msgType,
+      );
+    } catch (e) {
+      debugPrint('[$_tag] _buildSmsPayload error: $e');
+      return null;
+    }
   }
 
   /// Sign the packet by appending Ed25519 signature and public key fields.
