@@ -548,10 +548,19 @@ async fn main() {
 
     let addr = SocketAddr::from(([0,0,0,0], port));
     info!(%addr, "listening");
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| {
+        eprintln!("\n[HATA] Port {} bağlanamadı: {}", port, e);
+        eprintln!("Büyük ihtimalle port zaten kullanımda.");
+        eprintln!("Çözüm: Önceki backend instance'ını kapatın veya PORT env ile farklı port belirtin.");
+        eprintln!("  Örnek: $env:PORT=8081; cargo run --release\n");
+        std::process::exit(1);
+    });
     axum::serve(listener, app)
         .with_graceful_shutdown(async { tokio::signal::ctrl_c().await.ok(); info!("shutdown"); })
-        .await.unwrap();
+        .await.unwrap_or_else(|e| {
+            eprintln!("[HATA] Sunucu çalışırken hata oluştu: {}", e);
+            std::process::exit(1);
+        });
 }
 
 // =============================================================================
