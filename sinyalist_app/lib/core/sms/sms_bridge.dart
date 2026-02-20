@@ -152,4 +152,18 @@ class SmsBridge {
       return false;
     }
   }
+
+  /// Best-effort check for cellular service presence on Android.
+  /// Returns false on unsupported platforms or bridge errors.
+  static Future<bool> hasCellularService() async {
+    if (!_isSupported) return false;
+    try {
+      final result = await _methodChannel.invokeMapMethod<String, dynamic>(
+        'checkCellular',
+      );
+      return result?['available'] as bool? ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
 }

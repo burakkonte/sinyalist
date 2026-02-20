@@ -151,7 +151,7 @@ Rejection codes:
 |------------|----------|-------|
 | iOS background BLE | Critical | iOS cannot reliably advertise/scan BLE when backgrounded. Android ForegroundService is the only supported always-on mode. **Do not promise always-on BLE on iOS.** |
 | GPS fallback to Istanbul | High | If GPS permission is denied or unavailable, `LocationManager` falls back to Istanbul city-centre coordinates with accuracy=999999 cm. Callers check `LocationSnapshot.isReal`; the UI should warn users when real GPS is unavailable. |
-| SMS bridge not wired | Medium | SMS codec is complete and tested. Native `SmsManager` platform channel is TODO. SMS delivery is best-effort and unconfirmed. |
+| SMS relay configuration required | Medium | Native `SmsManager` bridge is wired on Android. SMS fallback works only when `SMS_RELAY_NUMBER` is configured, `SEND_SMS` is granted, and cellular service is available. Delivery remains best-effort and unconfirmed. |
 | Single backend instance | Medium | In-memory queue and dedup. Production needs PostgreSQL + Redis + load balancer. |
 | Ed25519 key storage | Medium | Stored in SharedPreferences (base64), not Android Keystore. Acceptable for v2. |
 

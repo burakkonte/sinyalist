@@ -49,11 +49,18 @@ class _SinyalistAppState extends State<SinyalistApp> with WidgetsBindingObserver
   @override
   void initState() {
     super.initState();
+        const smsRelayNumber = String.fromEnvironment('SMS_RELAY_NUMBER', defaultValue: '');
     _deliveryFsm = DeliveryStateMachine(
       ingestClient: _connectivity.ingestClient,
       keypairManager: _keypairManager,
+      config: DeliveryConfig(
+        smsRelayNumber: smsRelayNumber,
+      ),
     );
     WidgetsBinding.instance.addObserver(this);
+    if (_deliveryFsm.config.smsRelayNumber.isEmpty) {
+      debugPrint('[Main] SMS relay number not configured; SMS fallback is disabled');
+    }
     _initializeSystem();
   }
 

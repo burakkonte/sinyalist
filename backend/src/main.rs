@@ -231,7 +231,7 @@ async fn ingest(State(s): State<AppState>, body: Bytes) -> impl IntoResponse {
     if p.ed25519_signature.is_empty() || p.ed25519_public_key.is_empty() {
         s.m.sig_missing.fetch_add(1, Ordering::Relaxed);
         warn!(uid=p.user_id, "signature_missing");
-        return (StatusCode::BAD_REQUEST, HeaderMap::new(), Bytes::new());
+        return (StatusCode::FORBIDDEN, HeaderMap::new(), Bytes::new());
     }
 
     if !verify_sig(&p) {

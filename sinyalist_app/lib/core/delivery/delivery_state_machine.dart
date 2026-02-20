@@ -239,6 +239,13 @@ class DeliveryStateMachine extends ChangeNotifier {
         config.smsRelayNumber.isNotEmpty &&
         !kIsWeb &&
         defaultTargetPlatform == TargetPlatform.android) {
+          final smsPermission = await SmsBridge.hasPermission();
+      final hasCellularService = await SmsBridge.hasCellularService();
+      if (!smsPermission) {
+        debugPrint('[$_tag] SMS skipped — SEND_SMS permission missing');
+      } else if (!hasCellularService) {
+        debugPrint('[$_tag] SMS skipped — no cellular service');
+      } else {
       _transition(DeliveryState.sendingSms, packetIdHex);
       try {
         // Build compact SMS payload from the signed packet.
@@ -273,6 +280,7 @@ class DeliveryStateMachine extends ChangeNotifier {
         }
       } catch (e) {
         debugPrint('[$_tag] SMS transport error: $e');
+      }
       }
     } else if (config.smsEnabled && config.smsRelayNumber.isEmpty) {
       debugPrint('[$_tag] SMS skipped — no relay number configured');
@@ -369,12 +377,14 @@ class DeliveryStateMachine extends ChangeNotifier {
               case 26: msgType = val; break;
               case 27: break; // priority — ignore
             }
+                        break;
           case 1: // fixed64
             final val = readFixed64();
             switch (fieldNumber) {
               case 16: break; // timestamp_ms — prefer created_at_ms
               case 25: createdAtMs = val; break;
             }
+                        break;
           case 2: // length-delimited
             final len = readVarint();
             if (fieldNumber == 24 && len >= 16) { // packet_id
@@ -383,9 +393,11 @@ class DeliveryStateMachine extends ChangeNotifier {
             } else {
               pos += len;
             }
+                        break;
           default:
             // Unknown wire type — stop parsing to avoid corruption
             pos = rawPacket.length;
+                        break;
         }
       }
 

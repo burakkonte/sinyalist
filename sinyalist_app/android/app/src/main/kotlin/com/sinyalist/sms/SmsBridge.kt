@@ -27,8 +27,12 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
+import android.telephony.ServiceState
 import android.telephony.SmsManager
+import android.telephony.TelephonyManager
 import android.util.Log
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import androidx.core.content.ContextCompat
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
@@ -103,6 +107,8 @@ class SmsBridge(private val context: Context) {
         when (call.method) {
             "sendSms" -> handleSendSms(call, result)
             "checkPermission" -> result.success(mapOf("granted" to hasPermission()))
+                   "checkCellular" -> result.success(mapOf("available" to hasCellularService()))
+            
             else -> result.notImplemented()
         }
     }
@@ -175,6 +181,32 @@ class SmsBridge(private val context: Context) {
             )
 
             Log.d(TAG, "Queued SMS part ${index + 1}/${messages.size} to $address (${text.length} chars)")
+        }
+    }
+
+    private fun hasCellularService(): Boolean {
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val activeNetwork = cm.activeNetwork
+            if (activeNetwork != null) {
+                val caps = cm.getNetworkCapabilities(activeNetwork)
+                if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true) {
+                    return true
+                }
+            }
+
+            val tm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                context.getSystemService(TelephonyManager::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+            }
+
+            val state = tm?.serviceState?.state
+            state == ServiceState.STATE_IN_SERVICE || state == ServiceState.STATE_EMERGENCY_ONLY
+        } catch (e: Exception) {
+            Log.w(TAG, "hasCellularService check failed: ${e.message}")
+            false
         }
     }
 
