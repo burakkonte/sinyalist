@@ -4,6 +4,16 @@ plugins {
     id "dev.flutter.flutter-gradle-plugin"
 }
 
+import java.util.Properties
+
+def keyProperties = new Properties()
+def keyPropertiesFile = rootProject.file("key.properties")
+if (keyPropertiesFile.exists()) {
+    keyPropertiesFile.withInputStream { stream ->
+        keyProperties.load(stream)
+    }
+}
+
 android {
     namespace = "com.sinyalist"
     compileSdk = flutter.compileSdkVersion
@@ -26,9 +36,25 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        release {
+            if (keyPropertiesFile.exists()) {
+                storeFile = file(keyProperties['storeFile'])
+                storePassword = keyProperties['storePassword']
+                keyAlias = keyProperties['keyAlias']
+                keyPassword = keyProperties['keyPassword']
+            }
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig = signingConfigs.debug
+if (!keyPropertiesFile.exists()) {
+                throw new GradleException(
+                        "Missing android/key.properties. Refusing to build release with debug signing."
+                )
+            }
+            signingConfig = signingConfigs.release
         }
     }
 

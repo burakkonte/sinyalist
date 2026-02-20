@@ -37,7 +37,10 @@ class SinyalistApp extends StatefulWidget {
 }
 
 class _SinyalistAppState extends State<SinyalistApp> with WidgetsBindingObserver {
-  final ConnectivityManager _connectivity = ConnectivityManager();
+static const _backendUrl = String.fromEnvironment('BACKEND_URL', defaultValue: '');
+  final ConnectivityManager _connectivity = ConnectivityManager(
+    backendUrl: _backendUrl,
+  );
   final KeypairManager _keypairManager = KeypairManager();
   final LocationManager _locationManager = LocationManager();
   late final DeliveryStateMachine _deliveryFsm;

@@ -2,20 +2,28 @@
 // SINYALIST — Ed25519 Keypair Manager
 // =============================================================================
 // Generates a per-install Ed25519 keypair on first launch.
-// Stores securely via encrypted shared preferences.
+// Stores private material in secure storage (Android Keystore-backed).
+// Falls back to SharedPreferences only for legacy migration compatibility.
 // Signs packets before sending (internet/SMS/BLE).
 // =============================================================================
 
 import 'dart:convert';
 import 'package:cryptography/cryptography.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
-
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 /// Manages Ed25519 keypair lifecycle: generation, storage, signing.
 class KeypairManager {
   static const String _prefKeyPrivate = 'sinyalist_ed25519_private';
   static const String _prefKeyPublic = 'sinyalist_ed25519_public';
   static const String _tag = 'KeypairManager';
+
+  static const FlutterSecureStorage _secureStorage = FlutterSecureStorage(
+    aOptions: AndroidOptions(
+      encryptedSharedPreferences: true,
+      resetOnError: true,
+    ),
+  );
 
   final Ed25519 _algorithm = Ed25519();
 
@@ -29,35 +37,57 @@ class KeypairManager {
   /// Initialize: load existing keypair or generate new one.
   /// Must be called before any signing operations.
   Future<void> initialize() async {
-    final prefs = await SharedPreferences.getInstance();
-    final storedPrivate = prefs.getString(_prefKeyPrivate);
-    final storedPublic = prefs.getString(_prefKeyPublic);
+   final storedPrivate = await _secureStorage.read(key: _prefKeyPrivate);
+    final storedPublic = await _secureStorage.read(key: _prefKeyPublic);
 
     if (storedPrivate != null && storedPublic != null) {
-      try {
-        _privateKeyBytes = base64Decode(storedPrivate);
-        _publicKeyBytes = base64Decode(storedPublic);
+      if (await _tryLoadKeypair(storedPrivate, storedPublic)) {
+        return;
+      }
+    }
 
-        if (_privateKeyBytes!.length == 32 && _publicKeyBytes!.length == 32) {
-          final privateKey = SimpleKeyPairData(
-            _privateKeyBytes!,
-            publicKey: SimplePublicKey(_publicKeyBytes!, type: KeyPairType.ed25519),
-            type: KeyPairType.ed25519,
-          );
-          _keyPair = privateKey;
-          debugPrint('[$_tag] Loaded existing keypair (pubkey=${_publicKeyHex()})');
-          return;
-        }
-      } catch (e) {
-        debugPrint('[$_tag] Failed to load stored keypair: $e');
+    // Legacy migration path: old versions saved keys in SharedPreferences.
+    final prefs = await SharedPreferences.getInstance();
+    final legacyPrivate = prefs.getString(_prefKeyPrivate);
+    final legacyPublic = prefs.getString(_prefKeyPublic);
+    if (legacyPrivate != null && legacyPublic != null) {
+      final loaded = await _tryLoadKeypair(legacyPrivate, legacyPublic);
+      if (loaded) {
+        await _secureStorage.write(key: _prefKeyPrivate, value: legacyPrivate);
+        await _secureStorage.write(key: _prefKeyPublic, value: legacyPublic);
+        await prefs.remove(_prefKeyPrivate);
+        await prefs.remove(_prefKeyPublic);
+        debugPrint('[$_tag] Migrated keypair from SharedPreferences to secure storage');
+        return;
       }
     }
 
     // Generate new keypair
-    await _generateAndStore(prefs);
+await _generateAndStore();
   }
 
-  Future<void> _generateAndStore(SharedPreferences prefs) async {
+  Future<bool> _tryLoadKeypair(String storedPrivate, String storedPublic) async {
+    try {
+      _privateKeyBytes = base64Decode(storedPrivate);
+      _publicKeyBytes = base64Decode(storedPublic);
+
+      if (_privateKeyBytes!.length == 32 && _publicKeyBytes!.length == 32) {
+        final privateKey = SimpleKeyPairData(
+          _privateKeyBytes!,
+          publicKey: SimplePublicKey(_publicKeyBytes!, type: KeyPairType.ed25519),
+          type: KeyPairType.ed25519,
+        );
+        _keyPair = privateKey;
+        debugPrint('[$_tag] Loaded existing keypair (pubkey=${_publicKeyHex()})');
+        return true;
+      }
+    } catch (e) {
+      debugPrint('[$_tag] Failed to load stored keypair: $e');
+    }
+    return false;
+  }
+
+  Future<void> _generateAndStore() async {
     debugPrint('[$_tag] Generating new Ed25519 keypair...');
     final newKeyPair = await _algorithm.newKeyPair();
 
@@ -72,11 +102,10 @@ class KeypairManager {
       type: KeyPairType.ed25519,
     );
 
-    await prefs.setString(_prefKeyPrivate, base64Encode(_privateKeyBytes!));
-    await prefs.setString(_prefKeyPublic, base64Encode(_publicKeyBytes!));
+    await _secureStorage.write(key: _prefKeyPrivate, value: base64Encode(_privateKeyBytes!));
+    await _secureStorage.write(key: _prefKeyPublic, value: base64Encode(_publicKeyBytes!));
 
-    debugPrint('[$_tag] New keypair generated and stored (pubkey=${_publicKeyHex()})');
-  }
+    debugPrint('[$_tag] New keypair generated and stored securely (pubkey=${_publicKeyHex()})');  }
 
   /// Sign arbitrary data with the device's Ed25519 private key.
   /// Returns 64-byte signature.
@@ -118,6 +147,8 @@ class KeypairManager {
   /// Reset keypair (for testing only — not for production use).
   Future<void> resetKeypair() async {
     final prefs = await SharedPreferences.getInstance();
+    await _secureStorage.delete(key: _prefKeyPrivate);
+    await _secureStorage.delete(key: _prefKeyPublic);
     await prefs.remove(_prefKeyPrivate);
     await prefs.remove(_prefKeyPublic);
     _keyPair = null;
@@ -128,6 +159,9 @@ class KeypairManager {
 
   String _publicKeyHex() {
     if (_publicKeyBytes == null) return 'null';
-    return _publicKeyBytes!.sublist(0, 4).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+return _publicKeyBytes!
+        .sublist(0, 4)
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join();
   }
 }

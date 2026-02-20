@@ -10,6 +10,7 @@
 // =============================================================================
 
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
@@ -83,6 +84,7 @@ class IngestClient {
   /// Check if the backend is reachable and healthy.
   /// Returns true if /health returns 200 within timeout.
   Future<bool> checkHealth() async {
+        if (_baseUrl.isEmpty) return false;
     try {
       final uri = Uri.parse('$_baseUrl/health');
       final response = await _httpClient.get(uri).timeout(
@@ -128,6 +130,13 @@ class IngestClient {
   }
 
   Future<IngestAck> _sendOnce(Uint8List protobufBytes) async {
+    if (_baseUrl.isEmpty) {
+      return const IngestAck(
+        status: IngestAckStatus.networkError,
+        httpStatus: 0,
+        error: 'Backend URL not configured',
+      );
+    }
     try {
       final uri = Uri.parse('$_baseUrl/v1/ingest');
       final response = await _httpClient.post(
@@ -173,6 +182,23 @@ class IngestClient {
             final ackData = _parsePacketAck(response.bodyBytes);
             confidence = ackData['confidence'] as double?;
             serverTs = ackData['timestamp_ms'] as int?;
+            final received = ackData['received'] as bool? ?? true;
+            final ingestId = ackData['ingest_id'] as String?;
+            if (!received) {
+              return const IngestAck(
+                status: IngestAckStatus.rejected,
+                httpStatus: 200,
+                error: 'Server returned received=false',
+              );
+            }
+            debugPrint('[$_tag] Accepted (confidence=$confidence, ingestId=$ingestId)');
+            return IngestAck(
+              status: IngestAckStatus.accepted,
+              httpStatus: 200,
+              serverTimestampMs: serverTs,
+              confidence: confidence,
+              ingestId: ingestId,
+            );
           } catch (e) {
             debugPrint('[$_tag] Failed to parse ACK body: $e');
           }
@@ -301,6 +327,11 @@ class IngestClient {
             shift += 7;
           }
           pos += len; // Skip
+          if (fieldNumber == 6) {
+            if (pos - len >= 0 && pos <= data.length) {
+              result['ingest_id'] = String.fromCharCodes(data.sublist(pos - len, pos));
+            }
+          }
           break;
 
         case 5: // 32-bit (float)

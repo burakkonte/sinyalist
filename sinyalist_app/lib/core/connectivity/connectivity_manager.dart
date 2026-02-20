@@ -8,9 +8,11 @@
 // =============================================================================
 
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:sinyalist/core/bridge/native_bridge.dart';
 import 'package:sinyalist/core/delivery/ingest_client.dart';
+import 'package:sinyalist/core/sms/sms_bridge.dart';
 
 // ---------------------------------------------------------------------------
 // Transport priority
@@ -95,16 +97,20 @@ class ConnectivityManager extends ChangeNotifier {
 
   // Backend URL — automatically set per platform
   late final IngestClient _ingestClient;
-  // 10.0.2.2 is the Android emulator gateway to the host machine.
-  // On web (Chrome on host), use localhost directly.
+  // Default backend URL strategy:
+  // - Web: localhost (local dev)
+  // - Android/iOS: must be provided via --dart-define=BACKEND_URL.
+  //   Falling back to emulator host here can break real devices silently.
   static String get _defaultBackendUrl =>
-      kIsWeb ? 'http://localhost:8080' : 'http://10.0.2.2:8080';
+      kIsWeb ? 'http://localhost:8080' : '';
 
   late String _backendUrl;
   IngestClient get ingestClient => _ingestClient;
 
   ConnectivityManager({String? backendUrl}) {
-    _backendUrl = backendUrl ?? _defaultBackendUrl;
+_backendUrl = (backendUrl == null || backendUrl.trim().isEmpty)
+        ? _defaultBackendUrl
+        : backendUrl.trim();
     _ingestClient = IngestClient(
       baseUrl: _backendUrl,
       maxRetries: _maxRetries,
@@ -112,7 +118,11 @@ class ConnectivityManager extends ChangeNotifier {
   }
 
   Future<void> initialize() async {
-    debugPrint('[$_tag] Initializing (backend=$_backendUrl)');
+if (_backendUrl.isEmpty && !kIsWeb) {
+      debugPrint('[$_tag] WARNING: BACKEND_URL not configured; internet transport disabled on this platform');
+    }
+    final shownBackend = _backendUrl.isEmpty ? '<unset>' : _backendUrl;
+    debugPrint('[$_tag] Initializing (backend=$shownBackend)');
 
     _healthCheckTimer?.cancel();
     _healthCheckTimer = Timer.periodic(_healthCheckInterval, (_) => _evaluateTransport());
@@ -138,8 +148,18 @@ class ConnectivityManager extends ChangeNotifier {
   Future<void> _evaluateTransport() async {
     final internetAvailable = await _checkInternet();
 
+    bool hasCellular = _state.hasCellular;
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      try {
+        hasCellular = await SmsBridge.hasCellularService();
+      } catch (_) {}
+    }
+
     final previousTransport = _state.activeTransport;
-    _state = _state.copyWith(hasInternet: internetAvailable);
+_state = _state.copyWith(
+      hasInternet: internetAvailable,
+      hasCellular: hasCellular,
+    );
 
     TransportMode best;
     if (internetAvailable) {

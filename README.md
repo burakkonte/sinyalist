@@ -76,8 +76,9 @@ cargo run --release
 # From repo root:
 cd D:\Sinyalist_v2_Field_Reliable\sinyalist_app
 flutter pub get
-flutter run             # Debug on connected Android device
-flutter build apk       # Release APK
+flutter run --dart-define=BACKEND_URL=http://192.168.1.50:8080   # Physical Android cihaz için
+flutter run             # Emulator için (localhost köprüleme)
+flutter build apk       # Release APK (android/key.properties gerekli)
 ```
 
 ### Flutter App (Web — limited)
@@ -153,7 +154,7 @@ Rejection codes:
 | GPS fallback to Istanbul | High | If GPS permission is denied or unavailable, `LocationManager` falls back to Istanbul city-centre coordinates with accuracy=999999 cm. Callers check `LocationSnapshot.isReal`; the UI should warn users when real GPS is unavailable. |
 | SMS relay configuration required | Medium | Native `SmsManager` bridge is wired on Android. SMS fallback works only when `SMS_RELAY_NUMBER` is configured, `SEND_SMS` is granted, and cellular service is available. Delivery remains best-effort and unconfirmed. |
 | Single backend instance | Medium | In-memory queue and dedup. Production needs PostgreSQL + Redis + load balancer. |
-| Ed25519 key storage | Medium | Stored in SharedPreferences (base64), not Android Keystore. Acceptable for v2. |
+| Ed25519 key storage | Medium | Private key secure storage (Android encrypted storage/keystore-backed). Legacy SharedPreferences values otomatik migrate edilir. |
 
 ## Project Structure
 
