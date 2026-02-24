@@ -99,9 +99,12 @@ class SinyalistMeshController: NSObject, FlutterStreamHandler,
     private var queue: [MeshPacket] = []
     private let queueLock = NSLock()
 
-    // Deduplication (simple LRU via dictionary with capacity limit)
-    private var seenIds: [String: Int64] = [:]  // id → timestamp
+    // Deduplication: LRU dictionary with capacity cap + 1-hour TTL eviction.
+    // Entries older than seenTTLMs are purged when the dict reaches half capacity,
+    // preventing stale IDs from occupying slots indefinitely.
+    private var seenIds: [String: Int64] = [:]  // id → timestamp_ms
     private let maxSeenIds = 5000
+    private let seenTTLMs: Int64 = 3_600_000   // 1 hour in milliseconds
 
     // Statistics
     private var totalRelayed: Int = 0
@@ -440,13 +443,19 @@ class SinyalistMeshController: NSObject, FlutterStreamHandler,
     private func isDuplicate(_ id: String) -> Bool { seenIds[id] != nil }
 
     private func markSeen(_ id: String) {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        // TTL sweep: when dict reaches half capacity, purge entries older than 1 hour.
+        // This prevents stale packet IDs from occupying slots indefinitely.
+        if seenIds.count >= maxSeenIds / 2 {
+            seenIds = seenIds.filter { nowMs - $0.value < seenTTLMs }
+        }
+        // LRU fallback: if still over capacity after TTL sweep, evict the oldest entry.
         if seenIds.count >= maxSeenIds {
-            // Evict oldest entry
             if let oldest = seenIds.min(by: { $0.value < $1.value }) {
                 seenIds.removeValue(forKey: oldest.key)
             }
         }
-        seenIds[id] = Int64(Date().timeIntervalSince1970 * 1000)
+        seenIds[id] = nowMs
     }
 
     // MARK: - Stats Timer
