@@ -307,12 +307,12 @@ class DeliveryStateMachine extends ChangeNotifier {
       debugPrint('[$_tag] BLE mesh skipped (not supported on ${kIsWeb ? "web" : defaultTargetPlatform.name})');
     }
 
-    // All transports exhausted
+    // Tüm kanallar tükendi
     _updateRecord(packetIdHex, DeliveryState.failed,
         error: 'Tüm kanallar tükendi');
     return DeliveryResult(
       finalState: DeliveryState.failed,
-      error: 'All transports exhausted',
+      error: 'Tüm kanallar tükendi',
       elapsed: stopwatch.elapsed,
     );
   }
