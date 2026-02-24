@@ -11,13 +11,14 @@ Sinyalist, deprem sonrası altyapı çöküşü senaryosunda hayatta kalanların
 | Parametre | Değer |
 |-----------|-------|
 | Platform | Android (tam) · iOS (tam — v2.1) |
-| Ön uç | Flutter / Dart |
+| Ön uç | Flutter / Dart · Arayüz dili: Türkçe |
 | Android native | Kotlin + C++ NDK |
 | iOS native | Swift + CoreMotion + CoreBluetooth |
 | Arka uç | Rust (Axum + Tokio) |
 | Protokol | Protobuf v2 (32 alan) + Ed25519 imza |
-| İletim kaskadı | Internet → SMS → BLE Mesh (Android) · Internet → BLE Mesh (iOS) |
-| Test durumu | Rust: 15/15 ✅ · Flutter: 15/15 ✅ |
+| İletim kaskadı | İnternet → SMS → BLE Mesh (Android) · İnternet → BLE Mesh (iOS) |
+| Test durumu | Rust: 15/15 ✅ · Flutter: 46/46 ✅ |
+| `flutter analyze` | 0 hata, 0 uyarı ✅ |
 
 ---
 
@@ -35,7 +36,7 @@ Sinyalist, deprem sonrası altyapı çöküşü senaryosunda hayatta kalanların
 ║  Connectionless  ║  BLE ║  GATT Central    ║
 ║  + GATT          ║      ║  + Peripheral    ║
 ║                  ║      ║                  ║
-║  Internet→SMS    ║      ║  Internet→BLE    ║
+║  İnternet→SMS    ║      ║  İnternet→BLE    ║
 ║  →BLE kaskadı    ║      ║  kaskadı         ║
 ╚══════════════════╝      ╚══════════════════╝
          │                         │
@@ -45,7 +46,7 @@ Sinyalist, deprem sonrası altyapı çöküşü senaryosunda hayatta kalanların
          ║   Rust Ingest API   ║
          ║                     ║
          ║  Ed25519 doğrulama  ║
-         ║  LRU dedup          ║
+         ║  LRU+TTL dedup      ║
          ║  Hız sınırlama      ║
          ║  Coğ. küme skoru    ║
          ║  Çok-cihaz konsensüs║
@@ -63,7 +64,7 @@ Her iki platformda aynı STA/LTA algoritması çalışır; yalnızca donanım AP
 
 | Parametre | Değer |
 |-----------|-------|
-| Örnekleme hızı | 50 Hz (CMMotionManager eşdeğeri: Android SensorManager) |
+| Örnekleme hızı | 50 Hz (Android SensorManager) |
 | STA penceresi | 25 örnek (0.5 s) |
 | LTA penceresi | 500 örnek (10 s) |
 | Tetikleyici | Adaptif: `baseThreshold + sqrt(calibVariance) × 100`, kısıtlı [3.5, 8.0] |
@@ -108,6 +109,7 @@ iOS'ta ivme değerleri zaten g-birimi cinsinden gelir (`/9.81` dönüşümü ger
 - **CBCentralManager**: Peer'ları UUID ile tarar, GATT bağlantısı kurar, paketi okur
 - **Arka plan**: `CLLocationManager.startMonitoringSignificantLocationChanges()` → işlem canlı
 - **BLE background modları**: `bluetooth-central` + `bluetooth-peripheral` Info.plist'te kayıtlı
+- **seenIds TTL**: Aynı paket ID'nin 1 saatten uzun süre slotları bloke etmesini önlemek için `seenTTLMs = 3_600_000 ms` TTL tahliyesi + LRU yedek kapasitesi (5.000 giriş)
 
 ### 4.3 Çapraz Platform Uyum
 
@@ -171,18 +173,25 @@ Her pakette:
 ### 6.2 Yeniden Oynatma Koruması
 
 ```
-created_at_ms > 5 dakika önce  → HTTP 400 (çok eski)
+created_at_ms > 5 dakika önce   → HTTP 400 (çok eski)
 created_at_ms > 60 saniye ileri → HTTP 400 (saat farkı)
 ```
+
 SMS gecikmesi ve çok-atlı BLE gecikmeleri için 5 dakika penceresi yeterlidir.
 
-### 6.3 Hız Sınırlama
+### 6.3 Sunucu Tarafı Hız Sınırlama
 
 | Kapsam | Limit | Pencere |
 |--------|-------|---------|
 | Public key başına | 30 paket | 1 dakika |
 | ~1 km coğ. hücre başına | 500 paket | 1 dakika |
 | Paket boyutu | 1024 bayt max | — |
+
+### 6.4 İstemci Tarafı Hız Sınırlama
+
+Uygulama içinde panik spam koruması:
+- Varsayılan: 30 saniyede 5 gönderim hakkı
+- Kota dolduğunda kullanıcıya Türkçe uyarı gösterilir, aşılan gönderiler reddedilir
 
 ---
 
@@ -201,13 +210,13 @@ SMS gecikmesi ve çok-atlı BLE gecikmeleri için 5 dakika penceresi yeterlidir.
 
 ```protobuf
 message PacketAck {
-  fixed64 user_id     = 1;  // Gönderen ID (echo)
-  fixed64 timestamp_ms = 2; // Sunucu zaman damgası
-  bool    received    = 3;  // Kabul edildi mi
-  string  rescue_eta  = 4;  // (gelecek sürüm)
-  float   confidence  = 5;  // Coğrafi küme güven skoru
-  string  ingest_id   = 6;  // Sunucu ingest ID'si
-  string  status      = 7;  // "accepted" / "already_accepted"
+  fixed64 user_id      = 1;  // Gönderen ID (echo)
+  fixed64 timestamp_ms = 2;  // Sunucu zaman damgası
+  bool    received     = 3;  // Kabul edildi mi
+  string  rescue_eta   = 4;  // (gelecek sürüm)
+  float   confidence   = 5;  // Coğrafi küme güven skoru
+  string  ingest_id    = 6;  // Sunucu ingest ID'si
+  string  status       = 7;  // "accepted" / "already_accepted"
 }
 ```
 
@@ -288,6 +297,10 @@ güven = min(1.0, (ln(benzersiz_cihaz) + 1) / 3 × spam_factor)
           └──────┬───────┘
                  │
           ┌──────▼───────┐
+          │  İmzala      │──── Hata ──► BAŞARISIZ
+          └──────┬───────┘
+                 │
+          ┌──────▼───────┐
           │  İnternet ?  │──── Evet ──► HTTP POST ──► ACK ──► BİTTİ
           └──────┬───────┘
                  │ Hayır
@@ -300,6 +313,9 @@ güven = min(1.0, (ln(benzersiz_cihaz) + 1) / 3 × spam_factor)
           │  (son çare)  │           SQLite persist
           └──────────────┘           TTL: 1 saat
 ```
+
+Hız sınırı aşıldığında (istemci tarafı — 5/30sn) durum makinesi imzalama adımından önce
+`Hız sınırı` hatası ile erken çıkar.
 
 ---
 
@@ -326,9 +342,19 @@ Her iki platform için aynı Dart kanal isimleri:
 | Test Paketi | Geçen | Başarısız | Toplam |
 |-------------|-------|-----------|--------|
 | Rust backend (`cargo test`) | 15 | 0 | 15 |
-| Flutter Dart (`flutter test`) | 15 | 0 | 15 |
+| Flutter Dart (`flutter test`) | 46 | 0 | 46 |
+| `flutter analyze` | — | 0 hata/uyarı | — |
 
-### 11.2 Rust Test Kapsamı
+### 11.2 Flutter Test Kapsamı
+
+| Test Dosyası | Test Sayısı | Kapsam |
+|-------------|-------------|--------|
+| `sms_codec_test.dart` | 16 | SMS SY1 kodek, CRC32, çok parçalı, roundtrip |
+| `keypair_manager_test.dart` | 16 | Ed25519 üretim, depolama, imzalama, doğrulama, sıfırlama |
+| `delivery_state_machine_test.dart` | 13 | DeliveryConfig, DeliveryResult, DeliveryRecord, hız sınırı |
+| `widget_test.dart` | 1 | Splash ekranı yükleme sağlamlık testi |
+
+### 11.3 Rust Test Kapsamı
 
 | Test | Ne Doğrular |
 |------|------------|
@@ -348,10 +374,10 @@ Her iki platform için aynı Dart kanal isimleri:
 | `test_consensus_threshold` | 2 cihaz → eşik altı · 3 cihaz → eşikte |
 | `test_hex_encode` | `[0xDE, 0xAD, 0xBE, 0xEF]` → `"deadbeef"` |
 
-### 11.3 Yük Testi (Loadtest Aracı)
+### 11.4 Yük Testi (Loadtest Aracı)
 
-```bash
-cd tools/loadtest && cargo run --release -- --rate 1000 --duration 30
+```powershell
+cd tools/loadtest; cargo run --release -- --rate 1000 --duration 30
 # Sonuç: 30.000 imzalı paket, sıfır kuyruk dolması, p99 < 2 ms
 ```
 
@@ -362,8 +388,8 @@ cd tools/loadtest && cargo run --release -- --rate 1000 --duration 30
 | Kısıtlama | Önem | Not |
 |-----------|------|-----|
 | iOS arka plan BLE yayını | Orta | Manufacturer data yayınamaz; yalnızca service UUID. GATT bağlantısı çalışır. |
-| GPS yokken konum | Yüksek | Sıfır koordinat → backend güven skoruna dahil edilmez. |
-| iOS'ta SMS | — | Apple kısıtlaması. Kaskad Internet → BLE Mesh şeklinde çalışır. |
+| GPS yokken konum | Yüksek | İstanbul sabit koordinatına (41.01°K, 28.97°D) geri döner. Backend güven skoruna dahil etmez. |
+| iOS'ta SMS | — | Apple kısıtlaması. Kaskad İnternet → BLE Mesh şeklinde çalışır. |
 | Tek backend instance | Orta | Üretim: PostgreSQL + Redis + yük dengeleyici gerekir. |
 | Batarya tüketimi | Orta | Ön planda + arka planda BLE + ivmeölçer: ~6–12 saat |
 | Ed25519 anahtar rotasyonu | Düşük | İptal protokolü yok — v3 planında |
@@ -371,26 +397,36 @@ cd tools/loadtest && cargo run --release -- --rate 1000 --duration 30
 
 ---
 
-## 13. v2.1 Değişiklikleri (Bu Sürüm)
+## 13. Sürüm Geçmişi
 
-### iOS Native Implementasyon (Sıfırdan)
+### v2.2 (2026-02-24) — Bu Sürüm
+
+| Değişiklik | Detay |
+|-----------|-------|
+| `pubspec.yaml` temizleme | `sqflite`, `path_provider`, `permission_handler` kaldırıldı (kullanılmıyordu) |
+| iOS BLE TTL iyileştirmesi | `SinyalistMeshController.markSeen()`: 1 saatlik TTL tahliyesi + LRU yedek kapasitesi eklendi |
+| BACKEND_URL görünür uyarı | Splash ekranında 2 saniyelik Türkçe uyarı gösterilir (önceden yalnızca `debugPrint`) |
+| Test kapsamı genişlemesi | `keypair_manager_test.dart` (16 test) + `delivery_state_machine_test.dart` (13 test) eklendi |
+| Dart lint temizliği | 3 gereksiz `dart:typed_data` import'u kaldırıldı; `flutter analyze` sıfır sorun |
+| Kotlin format | `SmsBridge.kt` `when` bloğunda bozuk girinti düzeltildi |
+| Tam Türkçe arayüz | Kalan İngilizce UI string'leri Türkçeye çevrildi (başlatma mesajları, tooltip, hata metinleri, transport adları) |
+
+### v2.1 — iOS Native Implementasyonu
 
 | Dosya | Satır | İçerik |
 |-------|-------|--------|
 | `SinyalistSeismicEngine.swift` | ~280 | CoreMotion · STA/LTA portu · biquad filtre · 4 aşamalı red |
-| `SinyalistMeshController.swift` | ~350 | CoreBluetooth GATT · öncelik kuyruğu · SQLite C API · LRU dedup |
+| `SinyalistMeshController.swift` | ~360 | CoreBluetooth GATT · öncelik kuyruğu · SQLite C API · LRU+TTL dedup |
 | `SinyalistBackgroundManager.swift` | ~175 | CLLocationManager · BGTaskScheduler · kritik bildirim |
 | `AppDelegate.swift` | ~185 | FlutterImplicitEngineDelegate · 7 kanal kaydı |
 | `Info.plist` | — | BLE + konum arka plan modları · 5 izin açıklaması |
-| `lib/main.dart` | +2 satır | Platform koruyucu genişletmesi (Android ∨ iOS) |
-| `connectivity_manager.dart` | +6 satır | Mesh başlatma / aktivasyon / gönderim iOS'a eklendi |
 
-### Backend Hata Düzeltmeleri
+### Backend Hata Düzeltmeleri (v2.1)
 
 | Dosya | Düzeltme |
 |-------|---------|
 | `proto/sinyalist_packet.proto` | `PacketAck` mesajına `ingest_id` (alan 6) ve `status` (alan 7) eklendi |
-| `backend/src/main.rs` | `/metrics` uç noktası artık `Content-Type: application/json` dönüyor (önceden `text/plain`) |
+| `backend/src/main.rs` | `/metrics` uç noktası artık `Content-Type: application/json` dönüyor |
 
 ---
 
@@ -401,7 +437,7 @@ cd tools/loadtest && cargo run --release -- --rate 1000 --duration 30
 - [ ] AFAD API entegrasyonu (açık API mevcut olduğunda)
 - [ ] iOS seismic simülasyon testi (XCTest + CoreMotion mock)
 - [ ] Android ↔ iOS mesh bağlantı entegrasyon testi (gerçek cihaz gerekli)
-- [ ] Flutter debug ekranı: sismik telemetri + mesh istatistikleri
+- [ ] Flutter debug ekranı: sismik telemetri + mesh istatistikleri canlı görünümü
 - [ ] Wi-Fi P2P desteği (Android)
 - [ ] Geohash sınır etkisi: komşu hücre toplama
 - [ ] Batarya optimizasyonu: adaptif örnekleme hızı
@@ -443,10 +479,10 @@ while ($true) { Invoke-RestMethod http://localhost:8080/metrics | ConvertTo-Json
 ```
 
 Kritik eşikler:
-- `queue_full > 0` → ingest botu tampon doldu; ölçeklendirme gerekli
+- `queue_full > 0` → ingest tamponu doldu; ölçeklendirme gerekli
 - `verify_fail / ingested > 0.01` → şüpheli trafik
 - `consensus_pending` yüksek → gerçek sismik etkinlik veya test trafiği
 
 ---
 
-*Rapor tarihi: 2026-02-24 · Sinyalist v2.1 · claude/wonderful-jepsen*
+*Rapor tarihi: 2026-02-24 · Sinyalist v2.2 · claude/wonderful-jepsen*

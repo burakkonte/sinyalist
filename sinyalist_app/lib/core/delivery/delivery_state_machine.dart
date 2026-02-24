@@ -176,12 +176,12 @@ class DeliveryStateMachine extends ChangeNotifier {
         state: DeliveryState.failed,
         createdAt: DateTime.now(),
         completedAt: DateTime.now(),
-        error: 'Rate limited — please wait',
+        error: 'Hız sınırı — lütfen bekleyin',
       );
       _addRecord(record);
       return DeliveryResult(
         finalState: DeliveryState.failed,
-        error: 'Rate limited',
+        error: 'Hız sınırı',
         elapsed: stopwatch.elapsed,
       );
     }
@@ -203,10 +203,10 @@ class DeliveryStateMachine extends ChangeNotifier {
       debugPrint('[$_tag] Packet signed (${signedPacket.length} bytes)');
     } catch (e) {
       debugPrint('[$_tag] Signing failed: $e');
-      _updateRecord(packetIdHex, DeliveryState.failed, error: 'Signing failed: $e');
+      _updateRecord(packetIdHex, DeliveryState.failed, error: 'İmzalama hatası: $e');
       return DeliveryResult(
         finalState: DeliveryState.failed,
-        error: 'Signing failed: $e',
+        error: 'İmzalama hatası: $e',
         elapsed: stopwatch.elapsed,
       );
     }
@@ -309,7 +309,7 @@ class DeliveryStateMachine extends ChangeNotifier {
 
     // All transports exhausted
     _updateRecord(packetIdHex, DeliveryState.failed,
-        error: 'All transports exhausted');
+        error: 'Tüm kanallar tükendi');
     return DeliveryResult(
       finalState: DeliveryState.failed,
       error: 'All transports exhausted',

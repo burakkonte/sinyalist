@@ -17,11 +17,11 @@ import 'package:sinyalist/core/sms/sms_bridge.dart';
 // Transport priority
 // ---------------------------------------------------------------------------
 enum TransportMode {
-  grpc(0, 'Internet'),
-  sms(1, 'SMS Gateway'),
-  bleMesh(2, 'BLE Mesh'),
-  wifiP2p(3, 'Wi-Fi Direct'),
-  none(99, 'No Connection');
+  grpc(0, 'İnternet'),
+  sms(1, 'SMS Ağ Geçidi'),
+  bleMesh(2, 'BLE Ağı'),
+  wifiP2p(3, 'Wi-Fi Doğrudan'),
+  none(99, 'Bağlantı Yok');
 
   final int priority;
   final String displayName;

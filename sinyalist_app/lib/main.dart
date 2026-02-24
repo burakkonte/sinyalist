@@ -47,7 +47,7 @@ static const _backendUrl = String.fromEnvironment('BACKEND_URL', defaultValue: '
   bool _isEmergency = false;
   bool _isInitialized = false;
   StreamSubscription? _seismicSub;
-  String _initStatus = 'Initializing...';
+  String _initStatus = 'Başlatılıyor...';
 
   @override
   void initState() {
@@ -70,7 +70,7 @@ static const _backendUrl = String.fromEnvironment('BACKEND_URL', defaultValue: '
   Future<void> _initializeSystem() async {
     // Step 1: Initialize Ed25519 keypair
     try {
-      setState(() => _initStatus = 'Generating security keys...');
+      setState(() => _initStatus = 'Güvenlik anahtarları oluşturuluyor...');
       await _keypairManager.initialize();
       debugPrint('[Main] Ed25519 keypair ready');
     } catch (e) {
@@ -94,7 +94,7 @@ static const _backendUrl = String.fromEnvironment('BACKEND_URL', defaultValue: '
     try {
       if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.android ||
                       defaultTargetPlatform == TargetPlatform.iOS)) {
-        setState(() => _initStatus = 'Starting seismic engine...');
+        setState(() => _initStatus = 'Sismik motor başlatılıyor...');
         await SeismicBridge.initialize();
         await ServiceBridge.startMonitoring();
         await SeismicBridge.start();
@@ -107,7 +107,7 @@ static const _backendUrl = String.fromEnvironment('BACKEND_URL', defaultValue: '
 
     // Step 3: Initialize connectivity with real health probing
     try {
-      setState(() => _initStatus = 'Checking connectivity...');
+      setState(() => _initStatus = 'Bağlantı kontrol ediliyor...');
       await _connectivity.initialize();
       debugPrint('[Main] Connectivity manager ready');
     } catch (e) {
@@ -116,7 +116,7 @@ static const _backendUrl = String.fromEnvironment('BACKEND_URL', defaultValue: '
 
     // Step 4: Initialize GPS location
     try {
-      setState(() => _initStatus = 'Acquiring location...');
+      setState(() => _initStatus = 'Konum alınıyor...');
       await _locationManager.initialize();
       debugPrint('[Main] Location manager ready — hasReal=${_locationManager.hasRealLocation}');
     } catch (e) {
@@ -125,7 +125,7 @@ static const _backendUrl = String.fromEnvironment('BACKEND_URL', defaultValue: '
 
     setState(() {
       _isInitialized = true;
-      _initStatus = 'Ready';
+      _initStatus = 'Hazır';
     });
     debugPrint('[Main] System initialization complete');
   }
