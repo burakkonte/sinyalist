@@ -422,22 +422,24 @@ cd tools/loadtest && cargo run --release -- --rate 1000 --duration 30
 
 ### Hızlı Başlatma
 
-```bash
-cd backend/
-export PORT=8080
-export RUST_LOG=sinyalist_ingest=info
+```powershell
+# Windows (PowerShell):
+cd backend
+$env:PORT = "8080"
+$env:RUST_LOG = "sinyalist_ingest=info"
 cargo build --release
-./target/release/sinyalist-ingest
+cargo run --release
 
-# Sağlık kontrolü
-curl http://localhost:8080/health        # → 200 OK
-curl http://localhost:8080/metrics       # → JSON metrikler
+# Sağlık kontrolü:
+Invoke-RestMethod http://localhost:8080/health        # → OK
+Invoke-RestMethod http://localhost:8080/metrics       # → JSON metrikler
 ```
 
 ### İzleme
 
-```bash
-watch -n5 'curl -s http://localhost:8080/metrics | python3 -m json.tool'
+```powershell
+# PowerShell döngüsü (her 5 saniyede):
+while ($true) { Invoke-RestMethod http://localhost:8080/metrics | ConvertTo-Json; Start-Sleep 5 }
 ```
 
 Kritik eşikler:

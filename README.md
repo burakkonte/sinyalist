@@ -172,56 +172,71 @@ HTTP 200 means accepted into the ingest buffer — **not** that the packet has b
 
 ## Quick Start
 
-> All commands run from repo root.
+> **Windows (PowerShell)** kullanıcıları için tüm komutlar aşağıdaki sözdizimini kullanır.
+> Tüm komutlar **repo kökünden** çalıştırılmalıdır.
 
 ### Backend (Rust)
 
-```bash
-cd backend/
-RUST_LOG=info cargo run --release
-# Listens on http://localhost:8080
+```powershell
+cd backend
+$env:RUST_LOG = "info"
+cargo run --release
+# http://localhost:8080 üzerinde dinler
 # POST /v1/ingest  GET /health  GET /ready  GET /metrics
+```
+
+Farklı port için:
+```powershell
+$env:PORT = "8081"; $env:RUST_LOG = "info"; cargo run --release
 ```
 
 ### Flutter App — Android
 
-```bash
-cd sinyalist_app/
+```powershell
+cd sinyalist_app
 flutter pub get
-flutter run --dart-define=BACKEND_URL=http://192.168.1.x:8080   # Physical device
-flutter run                                                        # Emulator
+
+# Fiziksel cihaz (backend'in IP'sini girin):
+flutter run --dart-define=BACKEND_URL=http://192.168.1.x:8080
+
+# Emülatör (backend localhost'ta çalışıyor):
+flutter run
+
+# Release APK:
 flutter build apk --release
 ```
 
 ### Flutter App — iOS
 
-```bash
-cd sinyalist_app/
+```powershell
+cd sinyalist_app
 flutter pub get
 flutter run -d <iphone-device-id> --dart-define=BACKEND_URL=http://192.168.1.x:8080
 flutter build ios --release
 
-# Permissions required on first launch:
-#   Motion & Fitness (seismic), Bluetooth (mesh), Location Always (background keep-alive)
+# İlk çalışmada gerekli izinler:
+#   Motion & Fitness (sismik), Bluetooth (mesh), Location Always (arka plan)
 ```
 
-> **Note:** BLE mesh and seismic detection cannot be tested on the iOS simulator — a physical iPhone is required.
+> **Not:** iOS simulator'da BLE mesh ve sismik algılama test edilemez — gerçek iPhone gereklidir.
+
+> **Health check hatası hakkında:** Backend çalışmıyorsa uygulama `[IngestClient] Health check failed: TimeoutException` logu üretir ve otomatik olarak BLE mesh kaskadına geçer. Bu bir hata değil, tasarım gereği beklenen davranıştır. Backend'i başlatınca health check'ler otomatik olarak geçmeye başlar.
 
 ### Load Test
 
-```bash
-cd tools/loadtest/
+```powershell
+cd tools/loadtest
 cargo run --release -- --url http://localhost:8080 --rate 100 --duration 30
 ```
 
 ### Tests
 
-```bash
-# Backend (15 tests)
-cd backend/ && cargo test
+```powershell
+# Backend (15 test):
+cd backend; cargo test
 
-# Flutter (15 tests)
-cd sinyalist_app/ && flutter test
+# Flutter (15 test):
+cd sinyalist_app; flutter test
 ```
 
 ---
