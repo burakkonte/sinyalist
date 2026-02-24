@@ -77,6 +77,19 @@ static const _backendUrl = String.fromEnvironment('BACKEND_URL', defaultValue: '
       debugPrint('[Main] Keypair init failed: $e');
     }
 
+    // Step 1b: Warn the user if BACKEND_URL is not configured.
+    // Without it, internet transport is disabled; packets only reach the server
+    // via SMS or BLE mesh. Show a visible 2-second warning on the splash screen
+    // so the operator knows the app is running in offline-only mode.
+    if (_backendUrl.isEmpty &&
+        !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+         defaultTargetPlatform == TargetPlatform.iOS)) {
+      setState(() => _initStatus =
+          '⚠️ BACKEND_URL yapılandırılmamış\nİnternet taşıması devre dışı');
+      await Future.delayed(const Duration(seconds: 2));
+    }
+
     // Step 2: Native bridges — Android and iOS
     try {
       if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.android ||
