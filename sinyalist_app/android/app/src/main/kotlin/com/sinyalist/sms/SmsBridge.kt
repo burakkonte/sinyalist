@@ -107,7 +107,7 @@ class SmsBridge(private val context: Context) {
         when (call.method) {
             "sendSms" -> handleSendSms(call, result)
             "checkPermission" -> result.success(mapOf("granted" to hasPermission()))
-                   "checkCellular" -> result.success(mapOf("available" to hasCellularService()))
+            "checkCellular"   -> result.success(mapOf("available" to hasCellularService()))
             
             else -> result.notImplemented()
         }
