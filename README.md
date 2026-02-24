@@ -8,6 +8,18 @@ Fully functional on both **Android** (Kotlin + C++ NDK) and **iOS** (Swift + Cor
 
 ---
 
+## Screenshots
+
+<p align="center">
+  <img src="assets/screenshots/image1.png" width="260" alt="Home Screen" />
+  &nbsp;&nbsp;&nbsp;
+  <img src="assets/screenshots/image2.png" width="260" alt="Delivery Cascade" />
+  &nbsp;&nbsp;&nbsp;
+  <img src="assets/screenshots/image3.png" width="260" alt="BLE Mesh Active" />
+</p>
+
+---
+
 ## Platform Support
 
 | Feature | Android | iOS |
@@ -239,6 +251,8 @@ cd sinyalist_app; flutter test
 sinyalist/
 ├── README.md
 ├── rapor.md
+├── assets/
+│   └── screenshots/                   # image1.png · image2.png · image3.png
 ├── proto/
 │   └── sinyalist_packet.proto         # SinyalistPacket (32 fields), PacketAck (7 fields)
 ├── backend/
@@ -304,6 +318,18 @@ Not yet under a formal open-source license. All rights reserved by the author. C
 **Deprem hayatta kalanları için vatandaş konum ve durum bildirimi.**
 Çok katmanlı iletim kaskadı: **İnternet → SMS → BLE Mesh** (Android) · **İnternet → BLE Mesh** (iOS).
 Hem **Android** (Kotlin + C++ NDK) hem de **iOS** (Swift + CoreMotion + CoreBluetooth) üzerinde tam işlevsel.
+
+---
+
+## Ekran Görüntüleri
+
+<p align="center">
+  <img src="assets/screenshots/image1.png" width="260" alt="Ana Ekran" />
+  &nbsp;&nbsp;&nbsp;
+  <img src="assets/screenshots/image2.png" width="260" alt="İletim Kaskadı" />
+  &nbsp;&nbsp;&nbsp;
+  <img src="assets/screenshots/image3.png" width="260" alt="BLE Mesh Aktif" />
+</p>
 
 ---
 
@@ -538,6 +564,8 @@ cd sinyalist_app; flutter test
 sinyalist/
 ├── README.md
 ├── rapor.md
+├── assets/
+│   └── screenshots/                   # image1.png · image2.png · image3.png
 ├── proto/
 │   └── sinyalist_packet.proto
 ├── backend/
