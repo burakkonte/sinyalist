@@ -77,9 +77,10 @@ static const _backendUrl = String.fromEnvironment('BACKEND_URL', defaultValue: '
       debugPrint('[Main] Keypair init failed: $e');
     }
 
-    // Step 2: Native bridges only work on Android
+    // Step 2: Native bridges — Android and iOS
     try {
-      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.android ||
+                      defaultTargetPlatform == TargetPlatform.iOS)) {
         setState(() => _initStatus = 'Starting seismic engine...');
         await SeismicBridge.initialize();
         await ServiceBridge.startMonitoring();
@@ -88,7 +89,7 @@ static const _backendUrl = String.fromEnvironment('BACKEND_URL', defaultValue: '
         debugPrint('[Main] Seismic engine started');
       }
     } catch (e) {
-      debugPrint('[Main] Native init skipped (non-Android): $e');
+      debugPrint('[Main] Native init skipped: $e');
     }
 
     // Step 3: Initialize connectivity with real health probing

@@ -127,7 +127,8 @@ if (_backendUrl.isEmpty && !kIsWeb) {
     _healthCheckTimer?.cancel();
     _healthCheckTimer = Timer.periodic(_healthCheckInterval, (_) => _evaluateTransport());
 
-    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+    if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.android ||
+                    defaultTargetPlatform == TargetPlatform.iOS)) {
       try {
         _meshSubscription?.cancel();
         _meshSubscription = MeshBridge.stats.listen((stats) {
@@ -178,7 +179,8 @@ _state = _state.copyWith(
       debugPrint('[$_tag] Transport: ${previousTransport.displayName} -> ${best.displayName}');
       _state = _state.copyWith(activeTransport: best);
 
-      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.android ||
+                      defaultTargetPlatform == TargetPlatform.iOS)) {
         if (best == TransportMode.bleMesh || best == TransportMode.none) {
           await _activateMesh();
         }
@@ -254,10 +256,11 @@ _state = _state.copyWith(
     }
   }
 
-  /// BLE Mesh broadcast — always available as last resort.
+  /// BLE Mesh broadcast — Android and iOS fallback.
   Future<SendResult> _sendViaMesh(Uint8List data) async {
     try {
-      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.android ||
+                      defaultTargetPlatform == TargetPlatform.iOS)) {
         await MeshBridge.broadcastPacket(data);
         debugPrint('[$_tag] BLE mesh: packet injected (${data.length} bytes)');
         return SendResult.success(TransportMode.bleMesh);
