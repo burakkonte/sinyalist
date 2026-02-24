@@ -213,7 +213,7 @@ void main() {
 
       final result = await fsm.deliver(_dummyPacket);
       expect(result.isFailed, isTrue);
-      expect(result.error, contains('Rate limited'));
+      expect(result.error, contains('Hız sınırı'));
     });
 
     test('remainingSends clamps to 0, never goes negative', () async {

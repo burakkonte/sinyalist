@@ -261,7 +261,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           IconButton(
             icon: const Icon(Icons.warning_amber),
             onPressed: widget.onEmergencyToggle,
-            tooltip: 'Test emergency mode',
+            tooltip: 'Acil durumu test et',
           ),
         ],
       ),
@@ -518,7 +518,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         final message = result.isDelivered
             ? 'Acil sinyal gönderildi (${result.transport ?? "?"}) '
                 '${result.confidence != null ? "güven=${(result.confidence! * 100).toInt()}%" : ""}'
-            : result.error == 'Rate limited'
+            : result.error == 'Hız sınırı'
                 ? 'Çok hızlı gönderiyorsunuz — lütfen bekleyin'
                 : kIsWeb
                     ? 'Web demo: SMS ve BLE desteklenmiyor. Backend çalışıyorsa internet üzerinden gönderilir.'
