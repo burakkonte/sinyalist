@@ -8,7 +8,7 @@
 //   C4: Structured logs + counters for all drop/accept paths
 // =============================================================================
 
-use axum::{Router, extract::State, http::{StatusCode, HeaderMap, HeaderValue}, response::IntoResponse, routing::{get, post}};
+use axum::{Router, extract::State, http::{StatusCode, HeaderMap, HeaderValue}, response::IntoResponse, routing::{get, post}, Json};
 use bytes::Bytes;
 use dashmap::DashMap;
 use prost::Message;
@@ -396,7 +396,7 @@ struct MResp {
     clusters: usize,
 }
 
-async fn metrics(State(s): State<AppState>) -> impl IntoResponse {
+async fn metrics(State(s): State<AppState>) -> Json<MResp> {
     let r = MResp {
         ingested: s.m.ingested.load(Ordering::Relaxed),
         accepted_ok: s.m.accepted_ok.load(Ordering::Relaxed),
@@ -418,7 +418,7 @@ async fn metrics(State(s): State<AppState>) -> impl IntoResponse {
         keys: s.known_keys.len(),
         clusters: s.clusters.len(),
     };
-    (StatusCode::OK, serde_json::to_string_pretty(&r).unwrap_or_default())
+    Json(r)
 }
 
 async fn eviction(d: Arc<DashMap<Vec<u8>,u64>>, c: Arc<DashMap<(u64,u64),GeoCluster>>,

@@ -60,4 +60,6 @@ message PacketAck {
   fixed64 user_id = 1; fixed64 timestamp_ms = 2;
   bool received = 3; string rescue_eta = 4;
   float confidence = 5;  // v2: geo-cluster confidence score
+  string ingest_id = 6;  // server-assigned ingestion ID
+  string status = 7;     // "accepted", "processed", "already_accepted"
 }
